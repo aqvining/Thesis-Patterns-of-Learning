@@ -1,0 +1,409 @@
+---
+title: "Evidence of diet-mediated learning rates in the route-formation of four sympatric
+  mammal species"
+author: "Alexander Vining"
+header-includes:
+   - \usepackage{amsmath}
+date: "2023-05-16"
+output: pdf_document
+csl: ecology.csl
+#bibliography: references4.json
+---
+
+```{r setup4, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(sf)
+library(lwgeom)
+library(ggplot2)
+library(ggridges)
+library(RColorBrewer)
+library(purrr)
+library(tidyr)
+library(rstan)
+library(scales)
+library(grid)
+library(move)
+library(lubridate)
+library(jpeg)
+library(rbbt)
+
+load(file = "../Data/processed/POIs_05_50.Rdata")
+load(file = "../Data/processed/clustered_sfs_05_50.Rdata")
+load(file = "../Data/processed/FFT_segments_05_50.Rdata")
+
+#FFT_segments_05_50 <- FFT_segments_05_50 %>% map_dfr(~ .x) #map from list to one data frame
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0e2Data <- FFT_segments_05_50_modified %>% filter(as.numeric(D) > 10) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal traveled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+#Movement Data
+all_data_FFT <- read.csv("../DATA/raw/FFT.csv") %>%
+  mutate(timestamp = as.POSIXct(timestamp))
+
+#generate a key for each individual's species
+all_data_FFT[match(unique(all_data_FFT$individual.local.identifier), all_data_FFT$individual.local.identifier),] %>%
+  dplyr::select(individual.local.identifier, individual.taxon.canonical.name) %>%
+  mutate(across(everything(), gsub, pattern = " ", replacement = ".")) %>%
+  write.csv("../DATA/processed/species-key.csv", row.names = FALSE)
+
+all_data_FFT <- all_data_FFT[,-1]
+
+move_data_FFT <- move(all_data_FFT)
+move_data_FFT <- spTransform(move_data_FFT, "+ proj=utm + zone=17 + ellps=WGS84")
+attr(move_data_FFT@coords, "dimnames")[[2]] <- c("X","Y")
+
+#change raw data to UTM (telemetry object expects lat lon, but other files will use UTM later)
+
+
+#BCI Outline
+BCI <- readOGR(dsn="../DATA/raw", layer = "BCI_outline") #load BCI shape file
+BCI_latlon <- spTransform(BCI, "+proj=longlat +datum=WGS84 +no_defs +type=crs")
+BCI.df <- fortify(BCI) # format BCI shape file for ggplot
+
+
+#dipteryx crowns
+dipteryx <- readOGR(dsn="../DATA/raw", layer = "BCI_Dipteryx_Patches") #loads from 5 files: .dbf, .prj, .qpj, .shp, .shx
+#summary(dipteryx)
+#plot(dipteryx)
+
+
+#####Create a dataframe from dypterix shape files for use in ggplot
+dipteryx@data$id <- as.character(dipteryx@data$PatchID)
+dipteryx.points <- fortify(dipteryx, region = "PatchID")
+dipteryx.df <- inner_join(dipteryx.points, dipteryx@data, by = "id")
+
+dipteryx_latlon <- spTransform(dipteryx, "+proj=longlat +datum=WGS84 +no_defs +type=crs")
+dipteryx.points_latlon <- fortify(dipteryx_latlon, region = "PatchID")
+dipteryx.df_latlon <- inner_join(dipteryx.points_latlon, dipteryx_latlon@data, by = "id")
+#####
+
+```
+
+## Abstract
+
+For animals that selectively forage on resources distributed in spatially distant patches with short periods of high productivity, such as fruit, the development of efficient routes can greatly improvement foraging efficiency. A number of cognitive mechanisms, including reinforcement learning, episodic memory, and cognitive mapping, likely play a role in such route-formation. Though route-use is commonly observed in free-ranging animals, few studies have quantified the development of such routes. Such efforts can elucidate the learning mechanisms an animals uses for navigation and, when compared across many species, the contexts in which those mechanisms are likely to evolve. We used high-resolution GPS collars to track forty-six individual animals of four different mammal species foraging for fruit in a lowland tropical rainforest. Due to seasonal scarcity, we were able to map all potentially productive trees during the periods of study. Combining a novel combination of recursive sequence analysis and a hierarchical Bayesian model, we identify highly revisited points of interest (POIs) within each animal's territory and describe an asymptotically curved relationship between the distance separating two POIs and the length of animal transits between them. We found that an animal's previous experience with a given transit significantly reduced its expected transit length, with variation in learning rates mostly predicted by degree of frugivory. We suggest that our results offer insight into how different animals learn about and map their environments, and that our methods open the door to broader, analytically rigorous comparative analyses.
+
+## Introduction
+
+Route-formation reflects an animal's ability to build knowledge of the relationships between places and desired outcomes, such as food or mates [@reid1998]. The learning mechanisms of route-formation have been well studied through navigational experiments, but most such studies occur in captive settings, such as the radial arm maze and the Morris water maze [@knierim2011]. @janmaat2021 argue that by studying the formation of routes (among other patterns) in animals' natural movement trajectories, it is possible to expand the scope of learning research in many ways, including but not limited to: identifying learning patterns at larger spatio-temporal scales (which may or may not differ from patterns at captive scales as a function of, e.g. energetic constraints or memory [@fagan2013]); comparing learning patterns across a broader scope of species; and exploring how learning shapes the behavior and fitness of animals in a complex world. Measuring the formation of routes in the wild, however, has been historically limited by the difficulty of collecting and analyzing data on animal movements and resource distributions at appropriate resolutions and scales. In this study - with the aid of new GPS tracking technology, remote environmental sensing, and developing statistical methods - we analytically compare rates of route formation in 46 individual animals of four different species.
+
+There is a long history of using patterns of routine movement to make inferences about the cognition of animals, including those with relatively small brains. The formation of traplines - repeated visitation sequences between foraging locations - in honeybees [@buatois2016], bumblebees [@lihoreau2012], and hummingbirds [@garrison1999] has been studied extensively using artificial feeding arrays, with compelling evidence that these animals learn traplines by reinforcing movement responses to specific landmarks that, on average, yield greater foraging gains during individual bouts from a central place [@pyke1978; @reynolds2013]. Evidence that honey bees also make novel shortcuts between known foraging locations [@menzel2012] has sparked debate about the roles of planning, path integration, and spatial mapping in insect navigation [@menzel2021;@collett2013]. Overall, many insects appear to exhibit site-fidelity and repeated travel sequences, indicating the storage of foraging memory for route-development even at large spatial scales [@ackerman1982; @chaib2021; @janzen1971; @wehner2003; @collett2003], with some variation in the extent to which knowledge of learned routes is integrated into what is often called a place-map [@collett2006; @najera2009].
+
+For larger brained animals, ubiquitous patterns of site fidelity and routine space-use suggest more wide-spread use of place-maps, which is widely hypothesized to be a primary benefit in the selection for larger brains [@decasien2017; @powell2017a; @rosati2017]. Routes are used, for example, by spider monkeys and howler monkeys to monitor large numbers of fruiting trees [@difiore2007; @hopkins2016] and by sea turtles to make long distance migrations [@krochmal2021]. However, large-brained animals also exhibit varying degrees of behavioral flexibility [@riotte-lambert2017] and possess neurological systems that appear capable of integrating place-maps into near-euclidean spatial representations [@jacobs2003] and/or hierarchical systems of knowledge (i.e. cognitive maps) [@behrens2018; @buzsaki2005; @ekstrom2018]. A small number of recent studies have used long-term tracking to reveal the use of novel shortcuts in the natural foraging of, for example, elephants [@presotto2019a] and fruit bats [@harten2020], evidence of euclidean representations. Some experiments with primates have also revealed flexible use of spatial knowledge, suggestive of cognitive maps, to make foraging decisions [@janson2016; @trapanese2022]. Understanding the evolutionary and ontogenetic development of reinforcement-based place-maps into more sophisticated mental representations, however, requires continuous metrics that can be compared across species and developmental periods. Path linearity has been used as one measure of spatial knowledge (e.g. @harten2020; @jang2019), but @janmaat2021 note that path linearity can result from many mechanisms other than spatial representations, and that a full picture of what wild animals know requires measures of how path linearity (and other metrics) change over time, experience, and context. As of yet, no study has quantitatively compared the development of path linearity in multiple species of free rangining animals. This is the primary goal of our study.
+
+For a number of reasons, we focus our study on the fruit-eating mammals of Barro Colorado Island, Panama. Firstly, this lowland tropical rainforest experiences a period of food scarcity from November to December, alleviated somewhat by the fruiting of a single tree species, *Dipteryx oleifera*, in January and February. The fruit-producing crowns of *D. oleifera* are usually large, sparsely distributed, and visible from above the canopy. They also exhibit significant inter-tree variation in the timing of peak fruit productivity across the fruiting season [@caillaud2010]. Therefore, we predicted that rapid formation of efficient routes between productive trees will be important if fruit-dependent species are to competitively exploit this resource.
+
+Additionally, the diverse mix of fruit-eating species on the island lends itself to interesting comparative analyses. Spider monkeys (*Ateles geoffroyi*) and kinkajous (*Potos flavus*) are both exclusively arboreal, highly selective foragers that depend extensively on a diet of high-quality fruit [@difiore2008; @gonzalez-zamora2009; @julien-laferriere1993; @kays1999a; @lambert2014]. Fruit is also an important dietary resource for coatis (*Nasau narica*) and capuchins (*Cebus capucinus*) on the island, but these species additionally forage for insects, seeds, and other protein sources (coatis primarily-but-not-always on the ground and capuchins primarily-but-not-always in the canopy) [@alves-costa2004; @hirsch2009; @mosdossy2015]. Coatis and capuchins also both live in relatively stable social groups [@crofoot2011; @fragaszy2004; @gompper1997]; spider monkey social groups exhibit fission-fusion dynamics [@asensio2008]; kinkajous den with small family units but typically forage alone [@kays2001]. Kinkajous are the only one of the four species primarily active at night. Kinkajous and coatis are both in the *Procyonidae* Family of *Carnivora*; spider monkeys and capuchins belong to different Families of *Primates*. Because the variation in some key life history traits in these species are not taxonomically linked, a comparison can offer preliminary insights into potential convergent evolution of the cognitive mechanisms for route-formation.
+
+For example, when high quality resources are concentrated in sparse but spatially stable patches with semi-predictable patterns of depletion and renewal (as with *D. oleifera* fruit), the Ecological Intelligence Hypothesis predicts an energetic trade-off associated with selective foraging: selective foragers need not invest in specialized digestive systems for processing low-quality foods, but must travel further between food sources and maintain energetically expensive cognitive systems to remember where food can be found, predict when it will be available, and find efficient travel paths between productive foraging patches [@milton1981]. For example, howler monkeys (which are closely related to and broadly sympatric with spider monkeys) invest a lot of energy in a specialized digestive tract for processing young leaves; compared to spider monkeys, however, they have much shorter daily travel lengths and more stable (i.e. routine) travel patterns [@hopkins2011]. For coatis and capuchins, the case may be that they have a more generalized diet, but are not necessarily less selective. Instead they exhibit extractive foraging strategies for exploiting quality food sources that are more randomly distributed and difficult to find or access than fruit. We predict that quickly learning efficient routes between highly productive resource patches is less important for these extractive foragers.
+
+In summary, the goal of our research is to identify the socio-ecological factors that drive route-formation, keeping in mind 1) the inferences that can be drawn from rates of route-formation regarding animal learning and 2) the trajectories of cognitive evolution across different taxa.
+
+## Methods
+### Study Site
+
+Data were collected on Barro Colorado Island (BCI), Panama. BCI is a 15.6 km² island with semi-deciduous lowland tropical forest. The wet and dry seasons on BCI are very distinct, where approximately 90% of an average annual 2600mm rainfall occurs between May and December (Dietrich et al., 1982). Fruit availability fluctuates with these seasons, with a period of scarcity in the late wet season (October and November) broken by the fruiting of *D. oleifera* at the start of the dry season (mid-December) [@foster1982ecology].
+
+### Mapping *Dipteryx oleifera*
+
+All trees on the island were mapped during 2015 and 2017 using either a custom designed fixed wing (Penguin, FinWing, China) or multi-rotor UAV (Phantom 4 Pro, DJI, Shenzhen China). Two sets of flights were conducted in each year of the study, the first at or a bit before peak flowering and the second approximately two weeks later. Due to weather conditions and time constraints, flight altitude differed across the 4 sets of flights (but was held constant within each set), yielding imagery that ranged in resolution from 4-15 cm/pixel.  Photos were processed using the Agisoft Metashape program (Agisoft LLC, St. Petersburg, Russia),to create four georeferenced orthomosaic images of BCI, which were imported into ArcGIS (ESRI, Redlands, CA, USA). Dipteryx trees were identified by their distinctive pink/purple color and polygons were manually delineated to cover the maximum visible extent of each tree crown. We merged contiguous tree crows into larger polygons, thus some tree patch visits by our animals represented feeding at more than one tree in a single patch visit.
+
+### Animal Capture and Tracking
+
+We fit GPS/3-D accelerometer collars (e-Obs Digital Telemetry, Gruenwald, Germany) to individuals from four species, two primates, capuchins (*Cebus capucinus*), spider monkeys (*Ateles geoffroyi*), and two procyonid carnivores, kinkajous (*Potos flavus*) and coati (*Nasua narica*). Collars were programmed to collect a burst of six consecutive (1 hz) GPS locations every 4 min during the animal’s active periods: 06:00–18:00 for capuchins and spider monkeys, 06:00–
+18:30 for coatis, and 23:00–6:30 for the nocturnal kinkajous. 3D acceleration was recorded at 1-min intervals to determine activity profiles. Collaring occurred in 2015 and in 2017, with 20 individuals tagged the first field season and 26 individuals tagged the second field season. 8 spider monkeys, 7 capuchin monkeys, 16 coatis, and 14 kinkajous were tagged in total. From December 2015 to March 2016, the GPS sampling regime of collars on kinkajous and coatis was ACC-informed, with collars collecting data as described above when accelerometer readings were above a specified threshold (1,000 mV). ACC-informed sampling was not used in the second field season, from December 2017 to March 2018. All collars were programmed to timeout if they did not acquire a fix after 90 s.
+
+### Data Preparation
+
+The last fix of each GPS burst consistently had the best horizontal accuracy measurement, therefore only the last fix of each burst was used for all analyses. All data were uploaded to Movebank, an online repository for animal movement data. Duplicate and outlier fixes were removed using Movebank’s data filters, filtering fixes by the height above ellipsoid. All fixes with height above ellipsoid values less than or equal to 21 or greater than 244 were marked as outliers. This corresponds to the first quartile minus twice the interquartile range and the third quartile plus twice the interquartile range, respectively. Subsequent outlier detection was done using the ctmm package in R (Calabrese et al., 2016), using error information, straight line speeds, and distances from the median latitude and longitude to manually identify outliers via the *outlie* function. Further, obviously impossible locations, such as location estimates in the water and clearly outside the boundaries of the island, were marked as outliers. For ACC informed collars, GPS locations were interpolated for times when the animals were below their ACC thresholds. The error on the interpolated positions was modeled to replicate the observed GPS error of a stationary collar in a tree, and was drawn from a negative binomial distribution with a mean of 5.46m and a dispersion parameter of 2.4m.
+
+### Identifying Points of Interest
+
+In order to study how animals learn to move between important locations, it was first essential to identify where those important locations are. Though one option would be to simply use *D. oleifera* tree crowns as points of interest (POIs), this misses two important features of animal behavior. First, clusters of nearby tree crowns may be viewed by an animal as a single foraging patch. Treating each individual crown as a POI would similarly strain the computational limits of our analysis and potentially reduce our ability to identify the role of experience if an animal uses the same route to arrive at multiple, adjacent crowns. Second, there are many reasons other than food why an animal may frequently return to a location, including sleep sites, mating opportunities, territory defense, and social coordination. Failing to consider these points could result in biased analyses if, for example, animals frequently detour to these locations between foraging bouts. We thus use each animal's own movement to identify its individual POIs. We do this by combining a recursion analysis [@bracis2018] with a clustering analysis [@hahsler2019].
+
+The recursion analysis works by identifying, for each GPS fix in an animal's tracking data, the number of times that location was revisited. It requires the user to set a radius that defines the visitation region around each point, and a temporal threshold that defines the time outside the visitation region after which the animal is considered to have left the area. Any time the animal's movement trajectory re-enters the visitation region after a period of time outside the region greater than the temporal threshold, it is counted as a re-visit, or recursion. We visualized heat-maps of recursion values using different parameters, and used these heatmaps in combination with our own intuition about the spatio-temporal scale of animal foraging decisions and the error of our GPS collars to set a radius of ten meters and a temporal threshold of thirty minutes (Supplement 1: Path Clustering and Segmentation).
+
+In the second stage of POI identification, we selected an upper percentile of recursively visited GPS fixes, performed a spatial cluster analysis of these points using the DBSCAN algorithm, and drew minimum convex polygons around the resulting clusters. We call the percentile of GPS points used the revisit cut-off (e.g. a revisit cut-off of 0.5 means we cluster on the GPS points with revisit counts in the upper 50 percentile of an individual animal's track).  The DBSCAN algorithm detects clusters by identifying sets of "density connected" points in the data. Points are said to be density connected when at least one point in the cluster (a core point) contains at least some minimum number (MinPts) of other points within a neighborhood of radius *epsilon*, and all points in the cluster are within the neighborhood of at least one (other) core point. Given a value for MinPts, the algorithm will select an optimal value of *epsilon* based on the distribution of distances between each point and its MinPts nearest neighbor. This alogrithm has several advantages for us over other clustering approaches such as k-means: it does not require a specific number of clusters to be pre-specified, it can detect density clusters of any shape, and it will label points that do not meet the criteria for being a cluster "outliers" rather than assigning them a cluster. We ran the full recursion-and-clustering algorithm across all animal tracks individually (producing unique POIs for each animal ID) with several values of revisit cutoff and MinPts. For each combination of values, we visually assessed resulting POI polygons across all animals tracks and chose values for our final analysis that 1) minimized the total number of polygons and 2) maximized the distance between polygons, but 3) minimized the number of polygons that included large areas of low animal use (Supplement 1: Path Clustering and Segmentation). These values were 0.5 for the revisit cutoff and 50 for MinPts.
+
+This amounts to a (mostly) quantitatively rigorous way of defining our POIs as regions of continuous space 1) which an animal revisited more often than average, 2) in which the same animal spent approximately four or more hours total, and 3) which are separated by a meaningful distance from other such spaces.
+
+### Hierarchical Modelling
+
+Following the identification of POIs, we split each animal's movement trajectory into transits, defined as the movement segments between two different POIs. We discarded transits between POIs less than 10 meters apart, as we are primarily interested in how animals move between regions they do not have immediate perceptual access to. We treated the remaining transits as our primary unit of analysis, using as a dependent variable $\Delta L$, the difference between the transit length (assuming straight line travel between GPS fixes) and the linear distance (D) separating the start and end POIs.
+<!-- Figure placed here for line spacing in full thesis. -->
+```{r, cluster-segment-viz, echo = FALSE, warning = FALSE, message = FALSE}
+FFT_Plot <- move_data_FFT %>% 
+  as.data.frame() %>% 
+  filter(year(timestamp) %in% c("2017", "2018")) %>% 
+  ggplot() +
+  geom_polygon(data = fortify(BCI_latlon), aes(long, lat, group = group), color = "black", fill = "black", alpha = 0.03) + #BCI outline layer
+  #geom_polygon(data = dipteryx.df_latlon, aes(long,lat, group = id), fill = "green", color = "black", alpha = 0.1, size = 0.2) +
+  geom_path(aes(x = location.long, y = location.lat, color = individual.local.identifier), alpha = 0.4, linewidth = 0.5) +
+  facet_wrap(~individual.taxon.canonical.name) +
+  theme_classic() +
+  coord_fixed() +
+  labs(x = "longitude",
+       y = "latitude") +
+  scale_x_continuous(breaks = c(-79.87, -79.85, -79.83)) +
+  theme(legend.position = "none",
+        text = element_text(size =12),
+        strip.text = element_text(size = 10)
+        )
+
+#get example (Eli) clusters
+i = which(names(clustered_sfs_05_50) == "Eli.5765")
+clustered_sf = clustered_sfs_05_50[[i]]
+cluster_polygons <- POIs_05_50[[i]]
+cluster_map <- ggplot() +
+  #geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+  geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+  geom_sf(data = clustered_sf, alpha = 0.3, size = 0.05, shape = 1) +
+  geom_polygon(data = dipteryx.df, aes(long, lat, group = group), linewidth = 0.3, color = "black", fill = "green", alpha = 0.3 ) +
+  geom_sf(data = cluster_polygons, aes(), color = "red", fill = NA, linewidth = 1) +
+  coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+  theme_classic() +
+  theme(legend.position = "none",
+        text = element_text(size = 12)) +
+  labs(x = "longitude", y = "latitude") +
+  scale_x_continuous(breaks = c(-79.845, -79.842, -79.839), label = I) +
+  scale_y_continuous(label = I) 
+
+#get example (eli, day 25) segmented path
+Day = 25 #see PDF for overview of all days. Chosen because in the middle of study, fairly simply trajectory with clear transits and foraging bouts
+
+dayplot <- ggplot() +
+  #geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+  geom_sf(data = POIs_05_50[[i]]) + 
+  geom_sf_text(data = POIs_05_50[[i]], aes(label = Cluster), size = 3) + 
+  geom_sf(data = filter(clustered_sfs_05_50[[i]], day == Day), color = "black", size = 0.8) + 
+  geom_sf(data = filter(FFT_segments_05_50[[i]], day == Day), aes(color = factor(values)), size = 1) + 
+  theme_classic() +
+  coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, size = 12),
+        text = element_text(size = 12)) + 
+  labs(x = "longitude", y = "latitude") +
+  scale_x_continuous(breaks = c(-79.845, -79.842, -79.839), label = I) +
+  scale_y_continuous(label = I) 
+```
+```{r figure-1, echo = FALSE, message = FALSE, warning = FALSE, fig.width=6.25, fig.height = 7, fig.cap = "GPS trajectories for animals tracked during the 2017-2018 season. Each color is a different individual.", fig.scap = "GPS Tracking Data", out.extra=''}
+{
+grid.newpage()
+print(FFT_Plot)
+grid.draw(rasterGrob(image = readJPEG("../DOCS/spider.jpg"), x = 0.47, y = 0.825, width = 0.075))
+grid.draw(rasterGrob(image = readJPEG("../DOCS/capuchin.jpg"), x = 0.93, y = 0.83, width = 0.11))
+grid.draw(rasterGrob(image = readJPEG("../DOCS/coati.jpg"), x = 0.475, y = 0.42, width = 0.11))
+grid.draw(rasterGrob(image = readJPEG("../DOCS/kinkajou.jpg"), x = 0.91, y = 0.425, width = 0.08))
+}
+```
+```{r figure-3, echo = FALSE, message = FALSE, warning = FALSE, fig.width=6.25, fig.height = 4, fig.cap = "Breaking individual GPS trajectories into transits. A) The GPS fixes of a single kinkajou, with POI polygons super-imposed. B) The track from a single day of the same kinkajou in figure B, with transits between POIs colored red.", fig.scap = "Telemetry data and segmentation methods", out.extra=''}
+{
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(1, 2)))
+print(cluster_map, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(dayplot, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+grid.text(c("A", "B"), x = c(0.05, 0.55), y = c(0.92, 0.92), gp = gpar(cex = 1.8)) #Panel labels
+}
+```
+
+We built a hierarchical model of $\Delta L$ iteratively, first (1) exploring various non-linear models and error distributions to best fit the relationship between D and $\Delta L$. Based on the appearance of a humped curve in plots of transit $\Delta L$'s against D, we primarily focused on non-linear models with this feature, including the Jenss curve, the Shephard Curve, and a generalized Ricker curve. Ultimately, we chose to use the generalized Ricker curve in further analysis for several practical reasons: 1) it provided a better fit to the data, 2) it has easily interpretable parameters, 3) it has a log-linear form which simplifies Bayesian parameter estimation, and 4) it can flexibly fit initial curves that are concave-up or concave-down. Additionally, @persson1998 used the curve to model trade-offs in predator attack rates as predator body size increases (e.g. increasing attack rates due to development of perceptual systems vs. decreasing attack rates due to reduced responsiveness). This has a rough analogue to the notion that animal transits may be the result of either random search or directed travel, resulting in competing effects on $\Delta L$ as D increases. This is because the rate of increase in $\Delta L$ relative to increases in D would be much greater in transits resulting from random search than those from directed travel. However, the probability that a transit resulted from random search decreases as D increases. We believed such a dynamic may have been producing the patterns we observed in the data. Finally, we chose to fit the curve using a gamma distribution, as this distribution (a) satisfies the physical constraint that $\Delta L$ is positive real and (b) accommodates correlation between the expectation (mean) and dispersion (variance) in the data, which we noted during initial data visualizations.
+
+Next, (2) we added co-efficients for species-levels adjustments to each of the three parameters in the generalized Ricker curve, allowing our model to fit an independent curve for each species (and us to compare species level differences in these curves). We then (3) included experience as a predictor of $\Delta L$ by multiplying the maximum of the Ricker curve by the number of previous times the animal had previously made that same transit, raised to the power of an experience coefficient. In effect, this stretches the entire curve up or down (based on the sign of the coefficient) in a manner that scales with the breadth of previous experience (based on the magnitude of the coefficient). Power laws are frequently used to model learning curves [@donner2015]. Next, we (4) added species-level adjustments to the learning co-efficient, allowing us to model species level differences in learning rates. Finally, we (5) accounted for individual difference and repeated measures by building in individual-level adjustments to the maximum of the generalized Ricker curve and the learning-rate co-efficient. At each stage, we fit the model using Bayesian estimation with STAN [@carpenter2017stan] and RStan [@standevelopmentteam2023] and analyzed both the behavior of the Markov sampler and the outcome of the model to gain a better understanding of the patterns in our data. However, we primarily present the results from the final model, which can be written
+
+\begin{align*}
+\Delta L \sim & \Gamma (\alpha, \alpha/\mu) \\
+log(\mu) = & a_{sp} +\beta_{a_{id}} + log(k)(r_{sp} + \beta_{r_{id}}) + c_{sp} (log(D) - log(b_{sp}) + (1 - D/b_{sp}))) \\
+\alpha \sim & exponential(5)\\
+a_{sp} \sim & N(1, 5) \\
+r_{sp} \sim & N(0,1) \\
+\beta_{r_{id}} \sim & N(0,1)  \\
+\beta_{a_{id}} \sim & N(0, 1) \\
+b_{sp} \sim & N(1, 20) \\
+c_{sp} \sim & N(1,1)
+\end{align*}
+
+where $D$ is the linear distance in kilometers between the start and end POIs of a given transit, $\Delta L$ is the difference in kilometers between the length of the transit and $D$, $\alpha$ is the shape parameter of a gamma distribution, $\mu$ is the expectation of the gamma distribution, $a_{sp}$ is the log of $\Delta L$ at the critical point in the Ricker curve (i.e. it's max) for the transiting species, $\beta_{a_{id}}$ is an adjustment to $a_{sp}$ based on the transiting individual, $k$ is the number of times the transiting individual has previously made the same transit, $r_{sp}$ is the learning rate of the transiting species, $\beta_{r{id}}$ is an adjustment to $r_{sp}$ based on the transiting individual, $b_{sp}$ is the value of $D$ at the critical point in the Ricker curve, and $c_{sp}$ modifies the shape of the Ricker curve, such that values close to zero result in a wide peak, and larger values a narrower peak.
+
+## Results
+### Fitting a Generalized Ricker Model
+
+```{r model0e2-posteriors, include = FALSE}
+load(file = "../results/model0e2_fit")
+model0e2_draws <- rstan::extract(model0e2_fit)
+```
+
+We began our analysis of animal transits between POIs by fitting the differences of the transit length and the linear distance between POIs ($\Delta L$) to a generalized Ricker curve, dependent on the linear distance between POIs ($D$). We set bounds on the parameters to fix the intercept at 0 and ensure the following conditions: 1) predictions of $\Delta L$ initially increase as $D$ increases, up until some critical point defined by the first two parameters, $a$ and $b$, which give, respectively, $\Delta L$ and $D$ at the critical point, and 2) the shape of the resultant "humped curve" is defined by the third parameter $c$, such that the curve widens toward the flat line $\Delta L = a$ as $c \to 0$, and narrows toward a spike as $c \to \inf$. We predicted that at low values of $b$, this model would capture what, from initial visualizations, appeared to be a rapid increase in $\Delta L$ with increasing $D$, followed by a leveling off or decrease in $\Delta L$ growth rates with $D$. 
+
+This was not the case: estimates of $b$ from our baseline model fell well outside observed values of $D$ (89% CI $b$ [`r paste(round(quantile(model0e2_draws$b, c(0.055, 0.945)), digits = 2), collapse = ", ")`] kilometers). This means that the best fit of the generalized Ricker curve to our data did not use the "humped-curved" features of the model, but instead used just the front part of the curve that increases toward an asymptote at $\Delta L = a$. One possible reason for this, statistically, is that our initial assessments of the shape of the data were biased (e.g. by the density of points or the shape of the variance) and an asymptomatic curve would generally provide a better fit to our data than a humped curve. Another is that the expectation of $\Delta L$ given $D$ does have a humped curve shape, but this shape cannot be accommodated by the constraints of the generalized Ricker. We will elaborate further on these possibilities and their meaning in the discussion; for practical purposes, these results influenced the way we further developed the model to account for learning rates. Namely, we noted for values of $b$ in the posterior distribution, changes to $a$ would have a stronger and more clearly interpretable effect on predictions, and so chose to model all learning effects as modifications to $a$. We opted to continue the analysis using the generalized Ricker instead of switching to a simpler asymptotic curve because the full features of the Ricker curve may have been useful for describing species-specific patterns (they were not), and the failure of these features to prove useful in this context is still informative.
+
+### Rates of Route-Formation
+
+```{r model7e2-Persson, include = FALSE}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+species_labels <- levels(species_key$individual.taxon.canonical.name) %>% gsub("[.]"," ", x = .)
+
+model7e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  Exp = model0e2Data$transitExp,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]),
+  nID = length(unique(model0e2Data$individual.local.identifier)),
+  ID = as.numeric(factor(model0e2Data$individual.local.identifier))
+)
+
+load(file = "../results/model7e2_fit")
+
+model7e2_draws <- rstan::extract(model7e2_fit)
+
+model7e2_draws$r_marg <- model7e2_draws$r + matrix(c(model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 1] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 2] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 3] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 4] %>% apply(MARGIN = 1, mean)), 
+                                                   nrow = nrow(model7e2_draws$r_ID), ncol = 4, byrow = FALSE)
+
+model7e2_draws$log_a_marg <- model7e2_draws$log_a0 + matrix(c(model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 1] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 2] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 3] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 4] %>% apply(MARGIN = 1, mean)), 
+                                                   nrow = nrow(model7e2_draws$a_ID), ncol = 4, byrow = FALSE)
+```
+In our final model, there is clear evidence that the transits of all four species become more direct with increasing experience (Figure 3). Species-level posterior distributions of the learning effect, marginalized across individual effects, were entirely below zero and highly overlapping for spider monkeys (mean $\hat r$ = `r round(mean(model7e2_draws$r_marg[,1]), digits = 2)`, 89% CI [`r paste(round(quantile(model7e2_draws$r_marg[,1], c(0.055, 0.945)), digits = 2), collapse = ", ")`]), coatis (mean $\hat r$ = `r round(mean(model7e2_draws$r_marg[,3]), digits = 2)`, 89% CI [`r paste(round(quantile(model7e2_draws$r_marg[,3], c(0.055, 0.945)), digits = 2), collapse = ", ")`]), and kinkajous (mean $\hat r$ = `r round(mean(model7e2_draws$r_marg[,4]), digits = 2)`, 89% CI [`r paste(round(quantile(model7e2_draws$r_marg[,4], c(0.055, 0.945)), digits = 2), collapse = ", ")`]). This means that given our model of transit length, we can be nearly certain these species travel more linearly as they repeat a specific transit over the course of our study. The posterior distribution of the learning effect in capuchins (mean $\hat r$ = `r round(mean(model7e2_draws$r_marg[,2]), digits = 2)`, 89% CI [`r paste(round(quantile(model7e2_draws$r_marg[,2], c(0.055, 0.945)), digits = 2), collapse = ", ")`]) is significantly lower than that of the other species (spider monkeys, `r round(mean(model7e2_draws$r_marg[,2] - model7e2_draws$r_marg[,1] > 0) * 100, digits = 2)`% of posterior samples; coatis `r round(mean(model7e2_draws$r_marg[,2] - model7e2_draws$r_marg[,3] > 0) * 100, digits = 2)`% of posterior samples; kinkajous `r round(mean(model7e2_draws$r_marg[,2] - model7e2_draws$r_marg[,4] > 0) * 100, digits = 2)`% of posterior samples), but still significantly below zero (`r round(mean(model7e2_draws$r_marg[,2] < 0), digits = 2)`% of posterior samples), meaning we can be highly confident capuchin transits become more linear with experience, but at a slower rate than the other species. Recall that $r$ determines $\Delta L$ at the critical point of our model according to the term $\exp(a + r\log(k))$, where k represents transit experience, and that this critical point has been estimated at values of $D$ far outside our data. Thus, the best way to get a sense of the magnitude of the learning effect at relevant values of $D$ is visually (Figure 4).
+```{r, key-posterior-plots-m7e2, echo = FALSE, warning = FALSE, message = FALSE}
+
+post_a_plot <- model7e2_draws[!(names(model7e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(contains("log_a_marg")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + 
+  geom_density_ridges(aes(x = exp(Estimate), y = Variable)) +
+  theme_classic() + 
+  labs(title = expression(atop("a", paste("Maximum Expected ", Delta, "L"))),
+       x = "Estimate (kilometers)",
+       y = "Posterior Density") +
+  scale_y_discrete(labels = species_labels) +
+  theme(axis.text.y = element_text(face = "italic"),
+        plot.title = element_text(hjust = 0.5)) 
+
+post_b_plot <- model7e2_draws[!(names(model7e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(contains("b.")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + 
+  geom_density_ridges(aes(x = Estimate, y = Variable), bandwidth = 2) +
+  theme_classic() + 
+  labs(title = expression(atop("b", paste("POI Distance of Maximum ", Delta, "L"))),
+       x = "Estimate (kilometers)",
+       y = "Posterior Density") +
+  scale_y_discrete(labels = species_labels) + 
+  xlim(c(0,70)) +
+  theme(axis.text.y = element_text(face = "italic"),
+        plot.title = element_text(hjust = 0.5))  
+
+post_c_plot <- model7e2_draws[!(names(model7e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(contains("c.")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + 
+  geom_density_ridges(aes(x = Estimate, y = Variable)) +
+  theme_classic() + 
+  labs(title = "c\n Ricker Curve Shape",
+       x = "Estimate",
+       y = "Posterior Density") +
+  scale_y_discrete(labels = species_labels) +
+  theme(axis.text.y = element_text(face = "italic"),
+        plot.title = element_text(hjust = 0.5)) 
+
+post_r_plot <- model7e2_draws[!(names(model7e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(contains("r_marg")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + 
+  geom_density_ridges(aes(x = Estimate, y = Variable)) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() + 
+  labs(title = "r\n Learning Rate",
+       x = "Estimate",
+       y = "Posterior Density") +
+  scale_y_discrete(labels = species_labels) +
+  theme(axis.text.y = element_text(face = "italic"),
+        plot.title = element_text(hjust = 0.5)) 
+```
+```{r figure-2, echo = FALSE, message = FALSE, warning = FALSE, fig.width=6, fig.height = 6, fig.cap = "Posterior distributions of key model parameters $a$, $b$, $c$, and $r$, giving (respectively) the maximum expected difference between the straight line path between two POIs and the actual path travelled, the straight line distance between two POIs at which this maximum occurs, the shape of the curve (where higher values mean greater 'peakiness'), and the learning rate, where negative values indicate a reduction in expected travel length with increasing experience.", fig.scap = "Posterior distributions of key model parameters."}
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(2, 2)))
+print(post_a_plot, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(post_b_plot, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+print(post_c_plot, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+print(post_r_plot, vp = viewport(layout.pos.row = 2, layout.pos.col = 2))
+```
+
+```{r, posterior_predictions_m7e2, include = FALSE}
+predictors = list(Species = 1:4, dist = seq(0,max(model7e2Data_Stan$dist), by = 0.05), transitExp = 1:max(model7e2Data_Stan$Exp)) %>% # list of predictor levels
+  expand.grid() #all predictor combinations
+
+get_expectation_m7e2 <- function(predictors, parameter_draws, downsample = 50){
+  samples <- sample(seq_along(parameter_draws$lp__), downsample)
+  #Get predictions from a sample of the posterior
+  predictions = apply(predictors, MARGIN = 1, FUN = function(X) exp(parameter_draws$log_a_marg[samples,X[1]] + parameter_draws$r_marg[samples, X[1]] * log(X[3]) + parameter_draws$c[samples, X[1]] * (log(X[2]) - log(parameter_draws$b[samples, X[1]]) + (1 - X[2]/parameter_draws$b[samples, X[1]])))) %>% # X[1] = predictor species, X[2] = predictor dist, X[3] = predictor Exp
+    t() %>% 
+    as.data.frame() %>% 
+    bind_cols(predictors) %>% 
+    #get predictions from the mean of posterior parameter distributions
+    mutate(Vmean = apply(predictors, MARGIN = 1, FUN = function(X) exp(mean(parameter_draws$log_a_marg[,X[1]]) + mean(parameter_draws$r_marg[, X[1]]) * log(X[3]) + mean(parameter_draws$c[, X[1]]) * (log(X[2]) - log(mean(parameter_draws$b[, X[1]])) + (1 - X[2]/mean(parameter_draws$b[, X[1]])))))) %>% 
+    pivot_longer(contains("V"), values_to = "Pred", names_to = "Sample") %>% 
+    mutate(Sample = gsub("V", "", Sample))
+  
+  predictions$Sample[predictions$Sample != "mean"] <- samples[as.numeric(predictions$Sample[predictions$Sample != "mean"])] #replace prediction number with the number of the posterior sample from which it was drawn
+    
+  return(predictions)
+}
+
+posterior_predictions_m7e2 <- get_expectation_m7e2(predictors, model7e2_draws) %>% 
+  mutate(Species = c("Ateles.geoffroyi", "Cebus.capucinus", "Nasua.narica",  "Potos.flavus")[Species])
+```
+
+```{r, advanced-data-viz2-m7e2, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6, fig.height = 6, fig.cap = "Prediction curves of transit length minus POI distance using mean posterior estimates of model parameters, marginalized over individual effects, plotted through the empirical data. We have used a square root transformation on distances and trancated some empirical data points with large observed values in y to better visualize the data.", fig.scap="Transit length prediction curves", out.extra=''}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+ggplot() +
+  geom_point(data = model0e2Data, aes(x = sqrt(as.numeric(D)/1000), y = sqrt((as.numeric(length) - as.numeric(D))/1000)), alpha = 0.1, shape = 16, size = 0.8) +
+  geom_line(data = filter(posterior_predictions_m7e2, Sample == "mean"), aes(x = sqrt(dist), y = sqrt(Pred), col = transitExp, group = transitExp), linewidth = 0.5) +
+  facet_wrap(~Species) +
+  scale_color_continuous(type = "viridis") +
+  ylim(c(0,1.4)) +
+  labs(x = expression(~Distance~between~start~and~end~POIs ~(km^{1/2})),
+       y = expression(~Difference~between~POI~distance~and~transit~length ~(km^{1/2})),
+       col = "Transit Experience (k)") +
+  theme_classic()
+```
+
+## Discussion
+### Route Formation and Implications for Animal Cognition
+
+We find clear evidence that transit lengths between highly revisited locations decrease as a given individual repeats a given transit over the course of our study. There are several possible explanations for this. 
+
+The most likely explanation, we believe, is that as the spatial distribution of *D. oleifera* changes - due to the inter-tree variance in peak fruiting period - individual animals learn new routes between currently productive trees. 
+
+Such learning could be the result of procedural memory combined with some degree of movement stochasticity, as with the formation of traplines in bees [ @reynolds2013]. In other words, when an animal makes a transit that results in the encounter of a productive fruit tree, it is more likely to follow that same sequence of landmarks in the future (via reinforcement learning), with minor variations due to chance. When a more efficient transit is made as a result of such chance, the resultant simulus-action (landmark-movement) pairs are further reinforced. However, this system *per se* is not particularly flexible, and should produce only gradual changes in daily travel patterns of individuals [@collett2003]. We generally find, in looking at day-to-day paths of animals in our study, that they are highly variable. This suggests that increases in transit linearity over time are made by inferring the direction of a goal relative to a known landmark and orienting accordingly (as described in macaques by @wirth2017). At small scales, this could be done through spatial processing of a perceptual field, i.e. an animal finding a shorter path from one landmark to a nearby, intermediary landmark. At a larger scale, this would require an animal to build a topological mental map, for example by using path integration to keep track of its absolute distance and direction from a landmark and remembering this vector when it arrives at a goal [@wang2016]. Though our work does not clearly distinguish the scale at which animals are inferring more linear transits, we posit that the combination of generally flexible space-use with increasingly direct transits is evidence that these animals are using spatial reasoning to optimize their movement during goal-oriented travel. We thus suggest that, at a minimum, coatis, kinkajous, spider monkeys, and capuchins maintain knowledge of multiple important locations in the environments and learn to navigate between them by orienting to a dense array of local landmarks. Whether they optimize their travel paths by inferring direct transits between distant landmarks and goals is an important question for future research.
+
+The most common counter-argument to claims that path linearity is evidence of environmental knowledge is that animals may adopt straight-line travel as a generally efficient strategy for avoiding recently visited foraging patches, without necessarily knowing to which location they are travelling or the path they are taking [@janmaat2021]. Under this counter-hypothesis, our observations that linearity increases over experience would require that motivation for straight-line-travel increases over subsequent transits. Our study occurred across a seasonal transition from food scarcity to greater abundance, which we propose would have the opposite effect: as food becomes more abundant, diverse, and uniformly distributed, the need to avoid recently visited areas decreases and the probability of interspersing straight line travel with bouts of opportunistic foraging increases. It is possible, however, that our analysis has captured an initial increase in motivation to travel in a straight line as *D. oleifera* becomes available, which out-scales the predicted trend in the opposite direction at the end of the season. There may also exist other motivational reasons for straight-line-travel to increase across our study period we have not considered. Thus, though we go one step further than past research in demonstrating the production of environmental knowledge of free-ranging animal movement, we have not entirely removed the confound of motivation from our conclusions.
+
+The shape of our best-fit models offers further insights into the relative roles of knowledge and motivation in determining the length of transits. We find that the relationship between POI distance and transit length takes the shape of an asymptotic curve, such that relative increases to transit length diminish with increasing POI distances. This offers further evidence that animals anticipate or plan their destinations, and increase the linearity of their travel when moving to a far-away goal. We must also consider, however, that animals might alternate between strategies of local-search and linear travel without a specific goal destination (an effective strategy for escaping depleted regions, ala a Lévy walk [@viswanathan1999]). In this case, bouts of non-linear random-search are more likely to occur between nearby POIs than distant ones. The distribution of error in our data speaks to this reality: variance in transit length is much higher at small POI distances than large ones, a statistical impossibility for a single, positive-real process forced through zero (such as our model). Thus, we believe our data are produced by a mixture of processes, local-search and goal-directed travel among them. The prevalence of these processes could be better disentangled by fitting the data to a function of path linearity over POI distance derived from a mixture of diffusion processes, for example by adding together Brownian diffusion processes that differ in the way their diffusion rates relate to POI distance.
+
+Often, evidence of route-use and path inference are related to the question of whether or not animals have cognitive maps. A theory of cognitive maps, first proposed by Edward Tolman [@tolman1948], is well formed in the fields of psychology and neuroscience (see @behrens2018; @ekstrom2018; @okeefe1978; @schiller2015). Though novel shortcuts have been used to study the cognitive maps of rats in maze-based experiments, this field generally holds that cognitive maps are not explicitly spatial, but use abstract measures of "distance" and "direction" to connect memories and knowledge. Given this view, the most important evidence of cognitive maps is the use of what has variably been called "vicarious trial and error", "mental replay and pre-play", and "episodic memory". In other words, cognitive maps describe the way an animal uses past information to model and choose between possible futures. Because this model of the cognitive map is so well supported by neurological research into the function of the hippocampus and related brain regions, we hold the view that it is counter-productive to refer to topological mental representations of space as cognitive maps, as is common in behavioral ecology (e.g.  @bennett1996; @dyer1991; @presotto2019a), and suggest there is more nuance to studying cognitive maps through movement than demonstrating the use of novel shortcuts. 
+
+Instead, we propose that the scale and context of route optimization can be used to quantify the flexibility of animal navigation and compare cognitive maps between individuals and species (see @mikhalevich2017 for more on this argument). This requires a shift from the thinking that cognitive maps are rare, necessarily high-order systems and toward the view that cognitive maps are common in animals and can develop, with sufficient experience and memory capacity, into complex systems that enable topological inference at large scales. Our analysis suggests that selectively foraging mammals use spatial inference to optimize transits between frequently re-used locations at a time when the distribution of a key fruit resource is shifting dynamically across highly concentrated patches. The useful question, in this context, is not whether these animals have cognitive maps, but at what scale their cognitive maps are enabling spatial inference and what causes variation in this process.
+
+### Inter-Species Differences
+
+The clearest trend when comparing our model predictions between species is that spider-monkeys increase transit linearity at the fastest rate, followed by coatis and kinkajous, and then capuchins. It is not clear from our analysis whether these differences in learning rates result from making spatial inferences more frequently, or at larger spatial scales. We also note that coatis have longer (i.e. less linear) initial transits than the other species - their faster learning rate, relative to capuchins, resulting in similar transit linearity only when individuals from both species have made the transit multiple times. These results generally comport with the prediction that more fruit-dependent species (spider monkeys and kinkajous) will optimize transit between high value POI's faster, but with only four species there are many other ecological factors that must be considered. Coatis are the most terrestrial of the four species, which may enable greater variance in path linearity - from more tortuous random search to more linear directed travel. This could explain why coatis have initially less linear transits, but are similar in linearity to capuchins when both have high levels of transit experience. Kinkajous are the only nocturnal species in this study; in general, we expect foraging at night would limit an animal's ability to orient using distant landmarks, and thus reduce the scale at which they can make spatial inference. This could explain why kinkajous exhibit route optimization rates less than spider monkeys and similar to coatis, despite their high degree of frugivory. Kinkajous and spider monkeys, in addition to eating the highest percentages of fruit, also travel in smaller groups. Higher rates of route-optimization in these species could reflect an individual's increased ability to use spatial knowledge when there is less need to build group consensus in movement direction. 
+
+This narrative offers a contrast to the social brain hypothesis [@byrne1988; @reader2002], which has been popular for decades and posits that primate intelligence evolved largely to keep track of complex social relationships. The species in our study with the least socially complex groups, kinkajous, exhibited rates of route optimization equal or greater than coatis and capuchins, which live in moderate to large, highly cohesive groups. Capuchins, known for maintaining cultural traditions and their use of tools for extractive foraging [@barrett2018; @ottoni2008; @perry2011], exhibited the lowest rates of path optimization. Our point here is not to refute the idea that capuchins are intelligent, but to note that a less social, non-primate species appears to more flexibly adjust its goal-directed travel to changing resource distributions. Given that many group living animals do not evolve complex social relationships, and diet has been shown to be a better predictor of brain size than social structure in primates [@decasien2017], it may be time to flip the thesis of the social brain hypothesis on its head: maybe primates did not evolve intelligence because they were social, but they became social because they evolved intelligence (i.e. they evolved the ability to respond flexibly to changing environments at multiple spatio-temporal scales, and this mechanism also enables them to learn about individual differences and keep track of relationships). It is worth noting that although kinkajous do not live in complex social groups, they are long-lived and may very well develop individual relationships with their neighbors through vocalization, scent-markings, and other means that are largely invisible to us [@kays2001].
+
+Of course, it is frequently possible to craft a compelling evolutionary narrative when studying fewer species than ecological degrees of freedom. The coherence of our findings with *a priori* predictions is not a strong case for concluding that selectively foraging on fruit leads to natural selection for cognitive maps that enable spatial inference at large scales, but offers compelling evidence that it *might*. To our knowledge, this is the first study to rigorously compare rates of route optimization between species in an ecological context with large spatial scale. We thus offer a toolkit for analyzing animal cognition in a comparable manner through a combination of telemetry, environmental sensing, and hierarchical modelling. Applying these methods across a broad enough array of species would enable a phylogenetic analysis that more rigorously assesses the roles of diet, sociality, and spatio-temporal niche in the evolution of large scale spatial inference. This work would complement existing strategies such as comparisons of brain size and cognitive test batteries [@malsburg2020] to paint a fuller picture of how interactions between social structure and resource distribution result in different strategies for storing memories, consolidating knowledge, and predicting the future.
+
+### Suggestions for future comparative analyses of ecological cognition.
+
+@janmaat2021 propose a compelling system of analysis for studying animal cognition through natural movement, which includes 1) comparisons of changes in path linearity with experience, 2) decision analysis as animals move between locations with known, relevant qualities, and 3) informational analysis to quantify patterns of location revisitation. In each case, @janmaat2021 call for the development of hierarchical statistical methods to compare metrics across species. We have tackled the first case, with applicable lessons for moving forward.
+
+First, we suggest a small adjustment to the linearity index recommended by @janmaat2021 for quantifying route directedness. This measure  (the POI distance divided by the length of the transit) is useful for a cursory comparison of transits with different straight-line-distances. This, however, washes out any potential effects of POI distance on transit length, which we have noted are both present in our data and a logical product of differing motivations (e.g. random foraging, social cohesion, directed travel) underlying animal movement. Though it is possible to account for these differences by including  POI distance as a predictor of the linearity index, properly modelling a fraction as an outcome of its numerator is not straightforward. We use, instead, the difference between straight-line-distance and transit length ($\Delta L$), and suggest that for the statistical modeler this is both simpler and more interpretable.
+
+Second, our work calls for further exploration of the relationship between POI distance and transit length, both to ensure that the transits of animals that tend to travel between distant locations are properly compared to those with shorter transits, and to better identify the underlying factors that result in a non-linear relationship. Because we visually observed a pattern in our data where $\Delta L$ initially increased, as a function POI distance, then decreased, and finally leveled out, we focused on exploring "humped-curve" functions to model this relationship. We settled on the generalized Ricker used by @persson1998 because its parameters usefully describe a critical point that could result from the balancing of a positive effect between predictor and outcome (e.g. the scaling of random-search motivated path lengths as POI distance increases) and a negative effect (e.g. the increasing probability of a transit being goal-directed). However, this model did not fit our data as expected, and the critical point was estimated well outside the range of observed POI distances. This could be because 1) reduction in path linearity at larger POI distances resulting from an increased rate of directed travel does not outweigh the exponentially scaling tortuosity of the large POI distance transits that do occur from random-search, 2) the generalized Ricker does a poor job of modelling the dynamics between goal-directed travel and non-directed foraging (i.e. the humped curve shape of the data is real, but not captured by the constraints of the Ricker curve), or 3) our conceptualization of the processes underlying the relationship between POI distance and $\Delta L$ is wrong. Though using the generalized Ricker turned out to be useful to us for exploring what the relationship between POI distance and $\Delta L$ is not, we were unable to make full use of its multiple parameters to derive meaning from the patterns in our data; for those with smaller data sets or the desire to build more appropriate models, we suggest starting with functions that increase positively toward an asymptote.
+
+Third, we suggest there is a need for further theoretical work to understand how different movement processes shape the relationship between POI distance and $\Delta L$. This need is motivated most strongly by the strange pattern of error in our data, in which the variance decreases as the POI distance (and predicted $\Delta L$) increase. This inverse relationship between $\Delta L$ and its variance may explain why visualizing the data gives the impression of a humped curve. It is also anathema to the gamma distribution, or any other distribution that results from a single, positive-real process that runs through the origin. From an applied statistics perspective, one way to address this problem would be to develop mixed models to describe the balance of multiple processes producing transits (e.g. random foraging and directed travel). A promising avenue for determining what such a statistical model might look like is the study of Brownian Bridges. This method calculates probability densities of possible transits given the time and place of the start and end points and the assumption that the underlying movement process is a Brownian random walk. If the same derivations were made for an underlying process that combines multiple Brownian random walks (representing, e.g., deviations from straight-line-directed-travel made due to alternative motivations and deviations made due imperfect knowledge) with magnitudes dependent on start- and end-point distances, the resulting probability densities would describe predicted distributions of $\Delta L$ relative to POI distance.
+
+Finally, there are many intersting ways in which the model we have developed can be used a foundation, and expanded upon to further identify when and where path optimization occurs across animals. Building in parameters to adjust the learning rate based on the properties of a target POI, for example, could illuminate how animal learning is motivated differently by specific outcomes. Similarly, we apply the same learning function to model path optimization across all POI distances, but (like $\Delta L$) learning rates could vary depending are far apart to POIs are. Appropriate parameters to test this could also be built into our model, and could reveal the scale at which animals make spatial inferences to optimize their routes. These are just a few suggestions - the flexibility of our modelling approach opens the door to comparatively assessing any number of environmental variables that might determine how an animals learns and infers optimal paths between important locations. As these methods develop, and are integrated into existing approaches for comparing animals cognition, a clearer picture will emerge of how animals in complex, natural environments process information to make effective, future oriented decisions.
+
+

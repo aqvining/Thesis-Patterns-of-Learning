@@ -1,0 +1,67 @@
+---
+# UCD thesis fields
+title: "Patterns of Learning in the Navigation of Selectively Foraging Mammals"
+author: "Alexander Q. Vining"
+year: "2023"
+month: "August"
+program: "Animal Behavior"
+uccampus: "DAVIS"
+report: "DISSERTATION"
+degree: "DOCTOR OF PHILOSOPHY"
+chair: "Damien Caillaud"
+signature1: "Margaret Crofoot"
+signature2: "Andrew Sih"
+abstract: |
+  Memory and learning distinguish the movement of animals from other things, resulting in trajectories that change over time, but still repeatedly return to specific locations. The frequency and predicatability with which animals return to favored locations, and the patterns of change in the paths they use to get there, offer insights into the cognitive systems of learning and memory that guide them. For animals that rely on resources that are concentrated in sparsely distributed, high value patches, these systems are particularly important for avoiding the costs of inneficient random-search foraging. In this thesis, I analyze the trajectories of such animals across multiple contexts and spatial scales, particularly the trajectories of primates and kinkajous (animals that look and behaves much like a primate, but are in fact *Carnivoran*). I find that most of these animals are quick to learn efficient paths between foraging locations, and some are able to generalize strategies for efficient navigation to novel contexts. There is some evidence that more selective foragers rely more on routine 'traplines' between multiple known locations, but are faster to deploy strategies that exploit changing resource distributions. Taken together, results of these studies suggest that diverse animal species integrate episodic-like memories into a cogntive map that helps them plan movements over large distances. Evidence that kinkajous flexibly use knowledge of detailed route-networks through complex canopy substrate to quickly find and exploit new resources, is particularly important because it highlights that the advanced development of these cogntive systems is not unique to primates and their socially complex groups, but may evolve readily in response to particular resource distributions and environmental properties.
+acknowledgments: |
+  First and foremost, I would like to thank all of the co-authors who contributed to the work in this thesis. None of this work was completed on my own, and I am incredibly grateful for the ideas, analysis, support, data, writing, and advice that other contributed toward this work. I am especially grateful to my thesis advisor, Meg Crofoot, the other members of my committee, Damien Caillaud and Andy Sih, and to the academic mentors I had along the way, including Mark Grote, Roland Kays, Seth Frey, and Jeffrey Schenk. I am immensely grateful to my peers in the Animal Behavior Graduate Group, The Crofoot Lab, The Smithsonian Tropical Research Institute, and the Max Planck Institute of Animal Behavior for the communities rich in support and exchange they fostered for me across seven years and three countries. Special thanks are warranted for Grace Davis, Shauhin Alavi, and Amelia Munson, who got me through the day-to-day, read seemingly endless drafts, and taught me more than I can measure. Calixto Rodríguez was a rock star in the field, and endured through absurd conditions with me to collect some of these data. And of course, thank you to my family for all of the support and encouragement, especially my parents to whom this is dedicated. Financial support for this work was provided by the Unversity of California, Davis Animal Behavior Graduate Group and Hemispheric Institute for the Americas, The Smithsonial Tropical Research Institute, The National Science Foundation, the Max Planck Insitute of Animal Behavior, and Richard Coss.
+dedication: |
+  "*To my parents, Jodie, Neil, and Suzanne, for opening the whole world to me. And to the all the queers who learned to navigate that world before me, and bequeathed to me something like a map.*"    
+# End of UCD thesis fields
+knit: "bookdown::render_book"
+site: bookdown::bookdown_site
+output: 
+  aggiedown::thesis_pdf: 
+    latex_engine: xelatex
+tables: true
+#  aggiedown::thesis_gitbook: default
+#  aggiedown::thesis_word: default
+#  aggiedown::thesis_epub: default
+bibliography: bib/thesis.json
+# Download your specific bibliography database file and refer to it in the line above.
+csl: csl/ecology.csl
+# Download your specific csl file and refer to it in the line above.
+link-citations: yes
+linkcolor: blue
+urlcolor: blue
+citecolor: blue
+lot: true
+lof: true
+#space_between_paragraphs: true
+# Delete the # at the beginning of the previous line if you'd like
+# to have a blank new line between each paragraph
+#header-includes:
+#- \usepackage{tikz}
+---
+
+<!--
+Above is the YAML (YAML Ain't Markup Language) header that includes a lot of metadata used to produce the document.  Be careful with spacing in this header!
+
+If you'd like to include a comment that won't be produced in your resulting file enclose it in a block like this.
+-->
+
+<!--
+If you receive a duplicate label error after knitting, make sure to delete the index.Rmd file and then knit again.
+-->
+
+```{r include_packages, include = FALSE}
+# This chunk ensures that the aggiedown package is
+# installed and loaded. This aggiedown package includes
+# the template files for the thesis.
+if(!require(devtools))
+  install.packages("devtools", repos = "http://cran.rstudio.com")
+if(!require(aggiedown))
+  devtools::install_github("ryanpeek/aggiedown")
+library(aggiedown)
+```
+

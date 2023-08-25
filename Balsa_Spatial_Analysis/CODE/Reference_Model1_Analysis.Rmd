@@ -1,0 +1,413 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(sf)
+library(rethinking)
+all_kinkajou_scans <- read.csv("../DATA/processed/all_kinkajou_scans.csv")[,-1]
+load(file = "../data/processed/transition_arrays.Rdata")
+load("../DATA/processed/flower_counts_region.Rdata")
+load("../DATA/processed/flower_counts.Rdata")
+region_shapes <- st_read("../DATA/raw/Crown Region Shapes/Crown_Regions.shp") %>% st_set_crs("WGS84") #the shapefiles have already been used to sort flowers. THey are loaded here primarily for the purpose of determining region areas and thus flower densities
+```
+
+```{r helper_functions, include=FALSE}
+get_study_day_and_time <- function(Datetime_string, study_start) {
+  #study start must include the approximate start time of evening observations if overnight follows are to be binned into the correct study day
+  datetime_vector <- strsplit(Datetime_string, split = "")[[1]]
+  date1 <- paste(paste(datetime_vector[1:6], collapse = ""), 
+                "20", 
+                paste(datetime_vector[7:8], collapse = ""), sep = "") %>% as.POSIXct(format = "%d-%m-%Y", tz = "America/Panama")
+  time1 = paste(datetime_vector[9:10], collapse = "")
+  study_day = difftime(date1, study_start, units = "days") %>% floor()
+  return(list(study_day, time1))
+}
+
+get_kinkMinutesPerHour <- function(count_data, categories = 6) {
+  #default value for categories assumes count data has 6 rows per observational minute, representing 3 Regions x 2 states (hidden or visible)
+  minutes_per_hour = (sum(count_data)/(length(count_data)/categories)) * 60
+  return(minutes_per_hour)
+}
+
+get_growth_index <- function(time_series) {
+  removed = 0
+  while(time_series[1] == 0) {
+    time_series <- time_series[-1]
+    warning("initial observation removed due to value of 0")
+    removed = removed + 1
+  }
+  growth_index <- ((time_series-time_series[1])/time_series[1]) * 100
+  return(c(rep(NA, times = removed), growth_index))
+}
+
+get_decision_info <- function(transition_array, flower_data, kinkajou_counts){
+  # input:
+    #transition_array: an array with regions transitioned from in one dimension, regions transitioned to in the second, and time in the third, where each cell gives the number of transitions that occurred from region x to region y at time t
+    #flower_data: a dataframe with columns Adjusted_Count and Region. Should only contains data from a single study night
+    #kinkajou_counts: a dataframe with columns "timestamp", "Region1_total", "Region2_total", and "Region3_total". Should only contain data from a single study night
+  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                                                                                                                                                                                             1,0,1,0,                                                                       
+                                                                                             1,1,0,0,
+                                                                                             0,0,0,0),nrow = 4, ncol = 4)} ) %>%#this matrix is multiplied with a transition matrix to remove all transitions that are not from one region to a different region
+    array(dim = dim(transition_array))
+  
+  kinkajou_counts <- kinkajou_counts %>% relocate("Region1_total", "Region2_total", "Region3_total", "timestamp") #order columns so region columns can be indexed by the corresponding region integer
+  
+  if (sum(decision_transitions) <= 0) return(data.frame(matrix(ncol = 7, nrow = 0))) #if there are no decisions, returns a placeholder dataframe with 7 columns and 0 rows. Done to fit with the final form of the decision data.frame with columns for From, To, Minute, adj_flowers_to, Avoid, adj_flowers_avoid, and Study_night)
+  #extract information about each decision in array
+  decisions <- as.data.frame(which(decision_transitions > 0, arr.ind = TRUE)) #get array indices for all decisions
+  #below, duplicate any rows where the same decision was made more than once in a minute
+  decisions <- data.frame(lapply(X = decisions, 
+                                 FUN = rep, 
+                                 times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = decisions$dim1, dim2=decisions$dim2, dim3=decisions$dim3, MoreArgs = list(data = decision_transitions))))
+  names(decisions) <- c("From", "To", "Minute")
+  decisions <- mutate(decisions, 
+                      relative_density_to = arrange(flower_data, Region)$Relative_Density[To], #get the relative flower density of the region moved to for each decision.
+                      expected_rel_dens_to = arrange(flower_data, Region)$Expected_Relative_Density[To],
+                      kink_count_to = as.matrix(kinkajou_counts[,1:3])[cbind(Minute,To)],
+                      Avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
+  )
+  decisions <- mutate(decisions, relative_density_avoid = arrange(flower_data, Region)$Relative_Density[Avoid],
+                      expected_rel_dens_avoid = arrange(flower_data, Region)$Expected_Relative_Density[Avoid],
+                      kink_count_avoid = as.matrix(kinkajou_counts[, 1:3])[cbind(Minute,Avoid)])
+  return(decisions)
+}
+
+"%||%" <- function(a, b) {
+  if (!is.null(a)) a else b
+}
+
+
+```
+
+## Kinkajou Movement Reference Simulations
+
+There are many factors that could be influencing kinkajou movements within the balsa crown other than flower distributions or memory. Outside factors likely influence when kinkajous show up at all, and tree structure may influence how often kinkajous move between specific regions. One way to estimate how to separate the influences of unknown parameters from the effects of interest is to simulate data to use as a reference. Here we simulate kinkajou movements within the tree crown using only average transition rates. In other words, these simulations allow us to understand how correlations between tree structure and flower counts, for example, might lead us to conclude flower counts influence kinkajou movements, even if the dynamics that shape movement are completely independant of flower counts. Here, we simulate two reference models. 
+
+In the first, we maintain the overall timing of kinkajou visits by initializing kinkajous entering the tree at the same times (and to the same regions) as in the empirical data. The path the kinkajous take through the tree after this point, however, is determined stochastically using probabilities derived from the rate of kinkajou transitions between regions across the whole study. Thus, we can determine what range of parameter estimates our model finds if kinkajou movements were based purely on fixed, per minute transition rates and had no dependence on previous behavior, flower counts, other kinkajous, etc. . .
+
+In the second reference model, we also relax the deterministic constraints on when kinkajous enter the tree. To do this, we determine the average rate of kinkajous entering the tree, and simulate this across the study period, regardless of when kinkajous actually visited.
+
+```{r reference_model_1_simulations, eval = FALSE}
+all_transitions <- Reduce("+", lapply(transition_arrays, function(X) apply(X, MARGIN = c(1,2), sum))) #get the transition matrices for each sequence by applying sum across the third dimension of transition arrays in the solo_transitions list, then add these matrices together using the reduce function
+transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
+
+entries <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
+for(night in names(transition_arrays)){
+  entries[entries$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
+}
+entry_points <- which(entries[,1:3] == 1, arr.ind = TRUE)
+
+#this should be wrapped into a function
+simulated_scans = vector(mode = "list", length = 100)
+for(sim in seq_along(simulated_scans)){
+  simulated_scans[[sim]] <- entries
+  for(entry in seq_along(entry_points[,1])){
+    #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
+    i = entry_points[entry,1]
+    j = entry_points[entry,2]
+    study_night = simulated_scans[[sim]]$Study_night[i]
+    while(j != 4 & study_night == simulated_scans[[sim]]$Study_night[i]) {
+      j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
+      if(j != 4) {
+        if(i < nrow(simulated_scans[[sim]])){ 
+          i <- i + 1
+          simulated_scans[[sim]][i,j] <- simulated_scans[[sim]][i,j] + 1 
+        } else j <- 4 #simulated kinkajou exits if end of study period arrives
+      }
+    }
+  }
+  print(paste("simulation", sim, "finished", sep = " "))
+}
+names(simulated_scans) <- as.character(1:length(simulated_scans))
+save(simulated_scans, file = "../Results/reference_simulations1.Rdata")
+```
+
+#### Movement Rondomization Reference Model
+
+```{r reference model 1 data_prep}
+load("../Results/reference_simulations1.Rdata")
+
+#pivot dataframe to long format for easy usage in ggplot
+simulation_scans_long <- simulated_scans %>% 
+  lapply(pivot_longer, cols = Region1_total:Region3_total,
+         names_to = c("Region", "Visibility"),
+         names_sep = "_",
+         values_to = "Count") %>% 
+  map_dfr(~ .x, .id = "Simulation")
+
+simulation_scans_long$Region <- sapply(simulation_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
+
+
+simulation_scans_long <- simulation_scans_long %>% 
+  group_by(Simulation) %>% 
+  group_modify(~merge(.x, simulated_scans[[.y$Simulation]], by = c("timestamp", "Study_night")))
+
+simulated_counts <- simulation_scans_long %>% group_by(Simulation, Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 3)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour)) #scan data is in totals, not "hidden" or "visible", so there are half the number of categories as in the empirical data
+
+simulated_counts_region <- simulation_scans_long %>% group_by(Simulation, Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 1)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour))) %>% 
+  ungroup()
+
+combined_sim_data <- simulated_counts %>% group_by(Simulation) %>% group_modify(~ merge(flower_counts, .x, by = "Study_night", all = TRUE)) %>% 
+  ungroup()
+
+flower_averages <- flower_counts_region %>% 
+  group_by(Region) %>% 
+  summarize(total_flowers = sum(Count)) %>%
+  mutate(proportion = total_flowers/sum(total_flowers))
+
+combined_sim_data_region <- simulated_counts_region %>% 
+  group_by(Simulation) %>% 
+  group_modify( ~merge(flower_counts_region, .x, by = c("Study_night","Region") , all = TRUE)) %>%
+  mutate(Total_Flowers = combined_sim_data$Count[pmatch(Study_night, combined_sim_data$Study_night, duplicates.ok = TRUE)]) %>%
+  mutate(Adjusted_Count = Count - (Total_Flowers * flower_averages$proportion[Region]),
+         Average_Density = 10 * Total_Flowers/sum(st_area(region_shapes))) %>% #get desnity in flowers/10m^2
+  ungroup()
+```
+
+```{r Get_transitions, eval = FALSE}
+
+get_transitions <- function(count_data){
+  #input: a dataframe with columns "Region1_total", "Region2_total", "Region3_total" and (optionally) "timestamp".
+  #output: an array giving the number of transitions from one region (first dimension) to another (second dimension) for each minute (row) of the input data (third dimension)
+  transitions <- array(data = 0, dim = c(4,4,nrow(count_data)))
+  if("timestamp" %in% colnames(count_data)) arrange(count_data, timestamp)
+  count_data <- select(count_data, Region1_total, Region2_total, Region3_total)
+  for(i in 2:nrow(count_data)){
+    #to calculate the transition matrix, we treat the counts in the previous timestep as the row totals of the transition matrix
+    row_totals <- c(unlist(count_data[i-1,]),
+                    max(sum(count_data[i,]) - sum(count_data[i -1,]), 0)) #create a fourth row total for kinkajous entering the tree by differencing the total kinkajou counts of the current timestep and the previous timestep, counting only positive differences.
+    #we then treat the counts in the current timestep as the column totals in the transition matrix
+    col_totals <- c(unlist(count_data[i,]),
+                    max(sum(count_data[i-1,]) - sum(count_data[i,]), 0)) #create a fourth column total for kinkajous leaving the tree
+    for(j in seq_along(row_totals)){
+      for(k in seq_along(col_totals)){
+        m <- min(row_totals[j], col_totals[k]) #m is the maximum number of transitions that can contribute to both the relevant row total and column total
+        transitions[j,k,i] <- m
+        row_totals[j] <- row_totals[j] - m #subtract the number of transitions that have been added from the corresponding row total
+        col_totals[k] <- col_totals[k] - m #subtract the number of transitions that have been added from the corresponding column total
+      }
+    }
+  }
+  return(transitions)
+}
+
+simulated_transition_arrays <- vector("list", length = length(simulated_scans))
+names(simulated_transition_arrays) <- names(simulated_scans)
+for (i in seq_along(simulated_scans)){
+  simulated_transition_arrays[[i]] <- simulated_scans[[i]] %>% group_by(Study_night) %>% group_map(~get_transitions(.x))
+  names(simulated_transition_arrays[[i]]) <- as.character(unique(simulated_scans[[i]]$Study_night))
+}
+  
+
+save(simulated_transition_arrays, file = "../data/processed/simulated_transition_arrays.Rdata")
+```
+
+```{r departures_data}
+#the below calculations wrangle the data into a long form data frame that can fit a binomial model to determine how many kinkajous are likely to depart from a region at any given minute, as a function of the number of kinkajous in that region and the number of kinkajous in other regions. Its a little crude but gets the job done
+load(file = "../data/processed/simulated_transition_arrays.Rdata")
+stays <- vector("list", length = length(simulated_transition_arrays))
+names(stays) <-  names(simulated_transition_arrays)
+for (i in seq_along(stays)){
+  stays[[i]] <- lapply(simulated_transition_arrays[[i]], function(X) apply(X, 3, diag)[1:3,]) #diagonal element of each slice of transition array (representing a minute) give number of kinkajous that stayed in the region they were in on the previous minute
+}
+departures <- vector("list", length = length(simulated_transition_arrays))
+names(departures) <- names(simulated_transition_arrays)
+for (i in seq_along(departures)) {
+  departures[[i]] <- lapply(simulated_transition_arrays[[i]], function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,]) #summing the rows of transition array slices gives the total number of kinkajous. Subtracting the slice diagonal gives the number that moved to a new region
+}
+
+departure_dfs <-  vector("list", length = length(departures))
+for(h in seq_along(departures)) {
+  departures_df <- c()
+  for (i in seq_along(departures[[h]])){
+    depart_df <- departures[[h]]
+    stays_df <- stays[[h]]
+    temp_df <- data.frame(Minute = 1:ncol(depart_df[[i]]), 
+                          #get stays and departures for each region, given by the rows of the respective arrays (cols are minutes)
+                          n_1 = depart_df[[i]][1,] + stays_df[[i]][1,], 
+                          n_2 = depart_df[[i]][2,] + stays_df[[i]][2,],
+                          n_3 = depart_df[[i]][3,] + stays_df[[i]][3,],
+                          departures_1 = depart_df[[i]][1,],
+                          departures_2 = depart_df[[i]][2,],
+                          departures_3 = depart_df[[i]][3,],
+                          Study_Night = names(depart_df[i]))
+    departures_df <- rbind(departures_df, temp_df)
+  }
+  departures_long <- matrix(nrow = 0, ncol = 6)
+  
+  for(i in 1:nrow(departures_df)) {
+    #Get data for Region 1
+    if (departures_df$n_1[i] > 0) departures_long <- rbind(departures_long, c(departures_df$Study_Night[i], #study Night
+                                                                              departures_df$Minute[i], #Minute
+                                                                              1, #Region
+                                                                              departures_df$n_1[i], #n
+                                                                              sum(departures_df$n_2[i], departures_df$n_3[i]), #Neighbors
+                                                                              departures_df$departures_1[i])) #Departures
+    #Get data for Region 2
+    if (departures_df$n_2[i] > 0) departures_long <- rbind(departures_long, c(departures_df$Study_Night[i],
+                                                                              departures_df$Minute[i],
+                                                                              2, #Region
+                                                                              departures_df$n_2[i], #n
+                                                                              sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
+                                                                              departures_df$departures_2[i]))
+    #Get data for Region 3
+    if (departures_df$n_3[i] > 0) departures_long <-  rbind(departures_long, c(departures_df$Study_Night[i],
+                                                                               departures_df$Minute[i],
+                                                                               3, #Region
+                                                                               departures_df$n_3[i], #n
+                                                                               sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
+                                                                               departures_df$departures_3[i]))
+  }
+  departures_long <- data.frame(matrix(as.numeric(departures_long), ncol = 6))
+  colnames(departures_long) <- c("Study_Night", "Minute", "Region", "n", "Neighbors", "Departures")
+  departures_long$Region <- factor(departures_long$Region)
+  departure_dfs[[h]] <- departures_long
+}
+```
+
+```{r transition decisions, eval = FALSE}
+decisions <- vector("list", length = length(simulated_transition_arrays))
+for (h in seq_along(decisions)){ 
+  for(i in seq_along(simulated_transition_arrays[[h]])){
+    new_decisions <- get_decision_info(transition_array = simulated_transition_arrays[[h]][[i]], 
+                                       flower_data = filter(combined_sim_data_region, 
+                                                            Simulation == names(simulated_transition_arrays)[h], 
+                                                            Study_night == names(simulated_transition_arrays[[h]][i])), 
+                                       kinkajou_counts = filter(simulation_scans_long, 
+                                                                Simulation == names(simulated_transition_arrays)[h], 
+                                                                Study_night == names(simulated_transition_arrays[[h]][i]))) #see helper functions for get_decision_info
+    if(nrow(new_decisions) > 0) new_decisions$Study_night = names(simulated_transition_arrays[[h]][i])
+    decisions[[h]] <- rbind(decisions[[h]], new_decisions)
+  }
+  decisions[[h]] <- decisions[[h]] %>% mutate(relative_density_diff = relative_density_to - relative_density_avoid,
+                                              expected_density_diff = expected_rel_dens_to - expected_rel_dens_avoid,
+                                              kinkajou_diff = kink_count_to - kink_count_avoid)
+  decisions[[h]] <- mutate(decisions[[h]], Success = relative_density_diff > 0, 
+                           Success_Expected = expected_density_diff > 0,
+                           Success_Social = kink_count_to - kink_count_avoid > 0,
+                           From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
+}
+
+save(decisions, file = "../Results/simulation_decisions.Rdata")
+```
+
+## Simulated Decisions
+
+We look at whether the difference in adjusted counts between regions had any impact on "decisions" in the simulation. Here, a success means the agent went to the region with the greater adjusted flower count. We look at the frequencey of success relative to the magnitude of difference in adjusted flower count between the regions the agent was choosing between.
+
+```{r load_simulated_decisions}
+load(file = "../Results/simulation_decisions.Rdata")
+decisions_long <- map_dfr(decisions, ~ .x, .id = "Simulation")
+```
+
+```{r decision success plot}
+ggplot(na.omit(decisions_long)) + geom_point(aes(x = abs(relative_density_diff), y = Success, color = interaction(To, Avoid))) +
+  theme_classic()
+#This doesn't seem like enough points
+```
+By appearance, the adjusted flower count does not have an effect on kinkajou decisions
+
+## Agent Residence-Flower Interactions
+
+To visualize changes in flower counts and agent residence time together, over the course of the study, we use a growth index which gives the percent change in count or residence time relative to the first respective observation. This ensures the scale of both data types remains the same, and allows unbiased visualization of their relationship.
+
+```{r flowers}
+simulation_summaries <- simulated_counts %>% group_by(Study_night) %>% summarize(mean_growth = mean(Growth), stdev = sd(Growth))
+ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
+  geom_line(aes(linetype = "Flower Count"), stat = "identity") +
+  geom_point(stat = "identity") +
+  geom_line(mapping = aes(y = mean_growth, linetype = "Residence Time"), data = simulation_summaries, stat = "identity") +
+  geom_errorbar(data = simulation_summaries, aes(y = mean_growth, ymin = mean_growth - stdev, ymax = mean_growth + stdev)) +
+  theme_classic() +
+  scale_color_discrete(name = "Flower Count") +
+  scale_linetype_manual(values = c("Flower Count" = "solid", "Residence Time" = "dashed")) +
+  labs(#title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black dotted) \n and balsa flower counts (solid) over study period",
+       y = "Growth (%)",
+       x = "Study Night",
+       title = "Growth in Flower Counts and Simulated Residence Time")
+```
+May need to recalculate growth within each simulation. Should be centered at zero for first day
+
+ 
+```{r analysis_by_region}
+#still need to get a legend working on this
+region_count_summaries <- simulated_counts_region %>% group_by(Region, Study_night) %>% summarize(mean_growth = mean(Growth), stdev = sd(Growth))
+ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color = "green3", stat = "identity", linetype = "solid") + geom_point(stat = "identity", color = "green3") +
+  geom_line(data = region_count_summaries, aes(y = mean_growth), linetype = "dashed") + geom_errorbar(data = region_count_summaries, aes(y = mean_growth, ymin = mean_growth - stdev, ymax = mean_growth + stdev), color = "black") +
+  theme_classic() + 
+  facet_wrap(~Region, labeller = "label_both") +
+  theme(legend.position = "bottom") +
+  scale_linetype_manual(name = "", values = c("Flower Count" = "solid", "Agent Minutes Per Hour" = "dashed")) +
+  labs(#title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black) \n and balsa flower counts (solid) over study period",
+       y = "Growth (%)",
+       x = "Study Night")
+```
+
+Interesting . . . simulated agents spend much more time in region 2
+
+## Modeling Regional Agent Residence by relative flower density
+
+#### Relative Region Density
+
+Because region densities are very correlated with total flowers, it is probably better to use a predictor that normalizes the regional densities. Here, we get relative region densities by subtracting the density of flowers in the full tree from the density of flowers in each region on that night.
+
+Having now explored some simple modelling approaches, we switch now to using the rethinking package to fully and explicitly parameterize this final model. The first thing this allows us to do is model the data using a zero-augmented gamma distribution, which is a mixture model that includes both a bernoulli distribution on the probability of observing a zero and a gamma distribution of the expected values when a zero is not observed. Thus, this model explicitly separates the effects any predictor variables have on kinkajous showing up, versus the amount of time kinkajous stay when they do show up. Final predictions in the posterior will account for the balance between both types of effects.
+
+In addition to the predictor variables described, we take careful consideration in this model of co-variances, prior expectations, repeated measures, and varying effects.
+
+```{r regional analysis relative density, eval = FALSE}
+#bayesian methods
+
+
+residence_by_region_relative_density_sim_stan_fit <- map2stan(
+  alist(
+    Minutes_Per_Hour ~ dzagamma2(p, mu, scale),
+    logit(p) <-  ap + ap_Region[Region] + bp_Average_Density * Average_Density + bp_Relative_Density * Relative_Density + ap_night[Study_night],	# logit link function for the bernoulli distribution on probability of observing a zero (no kinkajou residence)
+    log(mu)  <-  am + am_Region[Region] + bm_Average_Density * Average_Density + bm_Relative_Density * Relative_Density + am_night[Study_night], # log link function for the mean (center?) of the gamme distribution on residence time, given a zero is not observed
+    #priors below
+    c(ap,am) ~ dnorm(0,2), #prior centers initial probability distribution of 0 residence time at 50% and residence time when a visit occurs at 1 minute. 
+    ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region (probability of 0)
+    am_Region[Region] ~ dnorm(0, am_sigma_Region), #prior distribution on random effects of region (residence time given a 0 is not observed)
+    ap_night[Study_night] ~ dnorm(0, ap_sigma_night), #prior distribution on random effects of night (probability of 0)
+    am_night[Study_night] ~ dnorm(0, am_sigma_night), #prior distribution on reandom effects of night (residence time given a zero is not observed)
+    c(bp_Average_Density,bm_Average_Density) ~ dnorm(0, 2), #prior distributions the coefficients for effects of average density (whole tree) on residence times (probablity of 0 and residence time given 0 is not observed) 
+    c(bp_Relative_Density,bm_Relative_Density) ~ dnorm(0, 2),	#prior distributions the coefficients for effects of relative density on residence times (probability of 0 and residence time given 0 is not observed)
+    c(scale, am_sigma_night, ap_sigma_night, ap_sigma_Region, am_sigma_Region) ~ dexp(1) #prior distributions for variance parameters
+  ),
+  data = combined_sim_data_region %>% 
+    select(Minutes_Per_Hour, Region, Relative_Density, Average_Density, Study_night) %>% 
+    na.omit() %>%
+    mutate(Average_Density = as.numeric(Average_Density), Study_night = as.numeric(factor(Study_night))), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(scale="lower=0")
+)
+
+save(residence_by_region_relative_density_sim_stan_fit, file = "../Results/residence_by_region_sim_MCMCs_relative_density.Rdata")
+stancode(residence_by_region_relative_density_sim_stan_fit)
+```
+
+By plotting the posterior distribution of parameter coeficcients, we can see the average density of flowers has a negative relationship with kinkajou residence time across regions, which matches with the decrease in kinkajou residence over time, while flower counts increased over time. Notably, this effect is visible in total time, but NOT in the probability of observing a 0. Thus, kinkajous still appear to come to the tree later in the season, but they do not stay as long. We see little effect of relative desnities in either the probabilities that kinkajous enter the region, or in the amount of time they stay there if they do.
+
+```{r posterior plotting4}
+load("../Results/residence_by_region_sim_MCMCs_relative_density.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(residence_by_region_relative_density_sim_stan_fit)
+plot(residence_by_region_relative_density_sim_stan_fit)
+pairs(residence_by_region_relative_density_sim_stan_fit, pars = c("ap_Region", "am_Region", "am", "ap", "bm_Average_Density", "bp_Average_Density", "bm_Relative_Density", "bp_Relative_Density"))
+
+```
+
+```{r ref model solo visits}
+reference1_solo_visits <- lapply(simulated_scans, extract_bouts)
+```

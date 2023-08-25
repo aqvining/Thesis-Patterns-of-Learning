@@ -1,0 +1,347 @@
+---
+title: "Lemur Path Recursion: DET Analysis"
+author: "Alexander Vining"
+date: "6/6/2022"
+output: html_document
+---
+# Setup
+
+```{r setup, message = FALSE}
+library(readr)
+library(tidyr)
+library(dplyr)
+library(lme4)
+library(rstan)
+library(bayesplot)
+library(ggplot2)
+library(ggridges)
+
+DETs <- read_csv("../Results/data_full.csv")
+```
+
+# Modelling determinism (DET) of lemur navigation through multi-destination arrays
+
+The full data set contains the number of recursions in each trial for all empirical and simulated data. A recursion is a match between a visit to a station and ANY previous visit by the same individual. Thus, an individual's 10th visit to a station will have 9 associated recursions. The DET score for each trial is the proportion of recursions for that trial that are repeats, meaning the associated pair of visits to a given location occurred within an identical sequence of three location visits. Because this metric is sensitive to the length of a sequence (both the segment under analysis, and the sequence preceding that segment), we do our best to standardize comparisons by only analyzing the first ten trials for all individuals, and only including individual that completed ten trials.
+
+```{r data_prep}
+DET_subset <- DETs %>% group_by(ID, Array) %>% filter(max(Trial) >=10, Trial <= 10)
+summarize(DET_subset, len = n()) %>% summary() #check all groups have length of 10
+```
+
+## Bayesian Models
+
+### Double Trapezoid
+```{r STAN DTdata setup}
+DETs_DT <- DET_subset %>% 
+  filter(Array == "DT" & ! Species == "None") %>% 
+  mutate(ID = factor(ID), Species = factor(Species), Source = factor(Source)) %>% #if rerun, re-order Source factors so experimental is first
+  select(!Session) %>% 
+  na.omit()
+
+STAN_DETdata_DT <- list(N = nrow(DETs_DT),
+                        I = length(levels(DETs_DT$ID)),
+                        J = length(levels(DETs_DT$Species)),
+                        K = length(levels(DETs_DT$Source)),
+                        Rep = as.integer(DETs_DT$DET * DETs_DT$Recursions),
+                        w = DETs_DT$Recursions,
+                        ID = as.numeric(DETs_DT$ID),
+                        Sp = as.numeric(DETs_DT$Species),
+                        Src = as.numeric(DETs_DT$Source))
+```
+
+We tested this data on a simpler model
+
+```{r run STAN, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+fit_DET_binom_DT <- stan(file = "../CODE/DET_Binom_model.stan",
+                          data = STAN_DETdata_DT,
+                          chains = 4,
+                          iter = 2000,
+                          warmup = 1000)
+
+save(fit_DET_binom_DT, file = "../Results/DET_DT_bimonmodel.Rdata") #This currently does not include individual effects in estimating likelihood.
+```
+
+And the model appears healthy . . .
+
+```{r model assessment, warning = FALSE}
+load("../Results/DET_DT_bimonmodel.Rdata")
+print(fit_DET_binom_DT, pars = c("a_0", "a_Sp", "a_Src"))
+pairs(fit_DET_binom_DT, pars = c("a_0", "a_Sp", "a_Src"), las = 1)
+```
+
+Next, we fit a more complex model allowing interactions between species and source effects, and individual effects.
+
+```{r run STAN interaction, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+fit_DET_binom_DT_Interact <- stan(file = "../CODE/DET_Binom_model_interactions.stan",
+                          data = STAN_DETdata_DT,
+                          chains = 4,
+                          iter = 2000,
+                          warmup = 1000)
+
+save(fit_DET_binom_DT_Interact, file = "../Results/DET_DT_bimonmodel_interactions.Rdata") #This currently does not include individual effects.
+```
+
+This model yielded some warning about max-tree depth, which is an efficiency issue (indeed, it took about 10 hours to run), but should not impact our inferences. It also warned of some high rhat values, which could indicate a failure to converge. Looking at the rhat values of the important parameters, though, they all seem healthy. This indicates poor convergence occurred only in the individual effects, which are not relevant to our model interpretations and will be integrated over in the posterior.
+
+```{r bayes_binom_analysis, warning = FALSE}
+load("../Results/DET_DT_bimonmodel_interactions.Rdata")
+print(fit_DET_binom_DT_Interact, pars = c("a_0", "a_Sp", "a_Src", "a_Interact"))
+pairs(fit_DET_binom_DT_Interact, pars = c("a_0", "a_Sp", "a_Src"), las = 1)
+#print(fit_DET_binom_DT, pars = c("a_id"))
+```
+
+We also look at some pairs plots and ensure that there are no worrisome correlation ridges.
+
+Because we set up the stan model to automatically generate factor-specific estimates of alpha, we can extract those values directly and then label them using the same iterative process as the STAN model does.
+```{r}
+a_pred <- rstan::extract(fit_DET_binom_DT_Interact, "a_pred")[[1]] #a (short for alpha) was used to represent to probability of success in our binomial model. It is equivalent to DET
+#Assign conditions to predictions by iterating through species and sources, as in the STAN model
+i <- 0
+interaction_factors <- vector(length = ncol(a_pred))
+for(j in levels(DETs_DT$Species)){
+  for(k in levels(DETs_DT$Source)){
+    i <- i+1
+    interaction_factors[i] <- paste(j,k, sep = "X") #sep value used for parsing into factors later
+  }
+}
+colnames(a_pred) <- interaction_factors
+```
+
+Finally, we can plot the posterior distributions of the alpha estimates, allowing us to make inferences as described in the results section of the associated manuscript "Mild movement sequence repetition in five primate species and evidence for a taxonomic divide in cognitive mechanisms"
+
+```{r ggridgeplot}
+pal <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442")
+plot_colors <- rep(pal, each = 4)
+names(plot_colors) <- colnames(a_pred)
+
+base_plot <- a_pred %>% 
+  data.frame() %>%
+  pivot_longer(cols = everything(), names_to = c("Species", "Source"), names_sep = "X", values_to = "alpha") %>%
+  mutate(Source = factor(Source, levels = c("Learning_Factor1", "Learning_Factor1.2", "Learning_Factor2", "Experimental"))) %>% 
+  ggplot()
+
+base_plot <- base_plot + 
+  geom_density_ridges(aes(x = alpha, y = interaction(Source, Species), fill = Species), rel_min_height = 0.01) +
+  theme_classic() +
+  theme(panel.grid.major.y = element_line(color = "grey", linetype = "dotted")) +
+  geom_vline(aes(xintercept = 0),color = "grey", linetype = "dotted")  +
+  scale_y_discrete(labels = c("Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical")) +
+  scale_fill_manual(values = pal, labels = c("Aye Aye", "Dwarf Lemur", "Mouse Lemur", "Vervet")) +
+  labs(y = "Source", x = "logit(DET)")
+
+ggsave(file = "../Results/Credible Intervals of alpha.tiff",
+       plot = base_plot,
+       units = "px",
+       dpi = 300)
+
+base_plot
+```
+
+
+### Zed_Array
+
+```{r STAN Zed_Array data setup Z}
+DETs_Zed_Array <- DET_subset %>% 
+  filter(Array == "Zarray" & ! Species == "None") %>% 
+  mutate(ID = factor(ID), Species = factor(Species), Source = factor(Source)) %>% #if rerun, re-order Source factors so experimental is first
+  select(!Session) %>% 
+  na.omit()
+
+STAN_DETdata_Zed_Array <- list(N = nrow(DETs_Zed_Array),
+                        I = length(levels(DETs_Zed_Array$ID)),
+                        J = length(levels(DETs_Zed_Array$Species)),
+                        K = length(levels(DETs_Zed_Array$Source)),
+                        Rep = as.integer(DETs_Zed_Array$DET * DETs_Zed_Array$Recursions),
+                        w = DETs_Zed_Array$Recursions,
+                        ID = as.numeric(DETs_Zed_Array$ID),
+                        Sp = as.numeric(DETs_Zed_Array$Species),
+                        Src = as.numeric(DETs_Zed_Array$Source))
+```
+
+
+
+We fit a model allowing interactions between species and source effects, and individual effects.
+
+```{r run STAN interaction Z, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+fit_DET_binom_Zed_Array_Interact <- stan(file = "../CODE/DET_Binom_model_interactions.stan",
+                          data = STAN_DETdata_Zed_Array,
+                          chains = 4,
+                          iter = 2000,
+                          warmup = 1000)
+
+save(fit_DET_binom_Zed_Array_Interact, file = "../Results/DET_Zed_Array_bimonmodel_interactions.Rdata") 
+```
+
+This model yielded some warning about max-tree depth, which should not impact our inferences. It also warned of low Bulk Effective Sample size and high Rhats, which could indicate poor mixing and lack of convergence. Looking at the ESS values and Rhats of the important parameters, though, they all seem more than sufficient. This indicates the problem is in the estimation of individual effects, which are not relevant to our model interpretations and will be integrated over in the posterior.
+
+```{r bayes_binom_analysis Z, warning = FALSE}
+load("../Results/DET_Zed_Array_bimonmodel_interactions.Rdata")
+print(fit_DET_binom_Zed_Array_Interact, pars = c("a_0", "a_Sp", "a_Src", "a_Interact"))
+pairs(fit_DET_binom_Zed_Array_Interact, pars = c("a_0", "a_Sp", "a_Src"), las = 1)
+#print(fit_DET_binom_Zed_Array, pars = c("a_id"))
+```
+
+We also look at some pairs plots and ensure that there are no worrisome correlation ridges.
+
+Because we set up the stan model to automatically generate factor-specific estimates of alpha, we can extract those values directly and then label them using the same iterative process as the STAN model does.
+```{r}
+a_pred <- rstan::extract(fit_DET_binom_Zed_Array_Interact, "a_pred")[[1]] #a (short for alpha) was used to represent to probability of success in our binomial model. It is equivalent to DET
+#Assign conditions to predictions by iterating through species and sources, as in the STAN model
+i <- 0
+interaction_factors <- vector(length = ncol(a_pred))
+for(j in levels(DETs_Zed_Array$Species)){
+  for(k in levels(DETs_Zed_Array$Source)){
+    i <- i+1
+    interaction_factors[i] <- paste(j,k, sep = "X") #sep value used for parsing into factors later
+  }
+}
+colnames(a_pred) <- interaction_factors
+```
+
+Finally, we can plot the posterior distributions of the alpha estimates, allowing us to make inferences as described in the results section of the associated manuscript "Mild movement sequence repetition in five primate species and evidence for a taxonomic divide in cognitive mechanisms"
+
+```{r ggridgeplot Z}
+pal <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442")
+plot_colors <- rep(pal, each = 4)
+names(plot_colors) <- colnames(a_pred)
+
+base_plot <- a_pred %>% 
+  data.frame() %>%
+  pivot_longer(cols = everything(), names_to = c("Species", "Source"), names_sep = "X", values_to = "alpha") %>%
+  mutate(Source = factor(Source, levels = c("Learning_Factor1", "Learning_Factor1.2", "Learning_Factor2", "Experimental"))) %>% 
+  ggplot()
+
+base_plot <- base_plot + 
+  geom_density_ridges(aes(x = alpha, y = interaction(Source, Species), fill = Species), rel_min_height = 0.01) +
+  theme_classic() +
+  theme(panel.grid.major.y = element_line(color = "grey", linetype = "dotted")) +
+  geom_vline(aes(xintercept = 0),color = "grey", linetype = "dotted")  +
+  scale_y_discrete(labels = c("Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical")) +
+  scale_fill_manual(values = pal, labels = c("Japanese Macaque", "Vervet")) +
+  labs(y = "Source", x = "logit(DET)")
+
+ggsave(file = "../Results/Credible Intervals of alpha_Zed_Array.tiff",
+       plot = base_plot,
+       units = "px",
+       dpi = 300)
+
+base_plot
+```
+
+
+### Pentagon
+
+```{r STAN Pentagon data setup}
+DETs_Pentagon <- DET_subset %>% 
+  filter(Array == "Pentagon" & ! Species == "None") %>% 
+  mutate(ID = factor(ID), Species = factor(Species), Source = factor(Source)) %>% #if rerun, re-order Source factors so experimental is first
+  select(!Session) %>% 
+  na.omit()
+
+STAN_DETdata_Pentagon <- list(N = nrow(DETs_Pentagon),
+                        I = length(levels(DETs_Pentagon$ID)),
+                        J = length(levels(DETs_Pentagon$Species)),
+                        K = length(levels(DETs_Pentagon$Source)),
+                        Rep = as.integer(DETs_Pentagon$DET * DETs_Pentagon$Recursions),
+                        w = DETs_Pentagon$Recursions,
+                        ID = as.numeric(DETs_Pentagon$ID),
+                        Sp = as.numeric(DETs_Pentagon$Species),
+                        Src = as.numeric(DETs_Pentagon$Source))
+```
+
+We tested this data on a simpler model
+
+```{r run STAN Pentagon, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+fit_DET_binom_Pentagon <- stan(file = "../CODE/DET_Binom_model.stan",
+                          data = STAN_DETdata_Pentagon,
+                          chains = 4,
+                          iter = 2000,
+                          warmup = 1000)
+
+save(fit_DET_binom_Pentagon, file = "../Results/DET_Pentagon_bimonmodel.Rdata") 
+```
+As with the Double Trapezoid analysis, there is some failure to mix, however the Rhats of important variables remain near 1, suggesting estimation problems occur only in individual variation where it is of less concern.
+Otherwise, the model appears healthy . . .
+
+```{r model assessment Pentagon, warning = FALSE}
+load("../Results/DET_Pentagon_bimonmodel.Rdata")
+print(fit_DET_binom_Pentagon, pars = c("a_0", "a_Sp", "a_Src"))
+pairs(fit_DET_binom_Pentagon, pars = c("a_0", "a_Sp", "a_Src"), las = 1)
+```
+
+Next, we fit a more complex model allowing interactions between species and source effects, and individual effects.
+
+```{r run STAN interaction Pentagon, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+fit_DET_binom_Pentagon_Interact <- stan(file = "../CODE/DET_Binom_model_interactions.stan",
+                          data = STAN_DETdata_Pentagon,
+                          chains = 4,
+                          iter = 2000,
+                          warmup = 1000)
+
+save(fit_DET_binom_Pentagon_Interact, file = "../Results/DET_Pentagon_bimonmodel_interactions.Rdata") 
+```
+
+This model yielded some warning about max-tree depth, which is an efficiency issue (indeed, it took about 10 hours to run), but should not impact our inferences. It also warned of low Bulk Effective Sample size, which could indicate poor mixing. Looking at the ESS values of the important parameters, though, they all seem more than sufficient. This indicatesthe problem is in the estimation of individual effects, which are not relevant to our model interpretations and will be integrated over in the posterior.
+
+```{r bayes_binom_analysis Pentagon}
+load("../Results/DET_Pentagon_bimonmodel_interactions.Rdata")
+print(fit_DET_binom_Pentagon_Interact, pars = c("a_0", "a_Sp", "a_Src", "a_Interact"))
+pairs(fit_DET_binom_Pentagon_Interact, pars = c("a_0", "a_Sp", "a_Src"), las = 1)
+#print(fit_DET_binom_Pentagon, pars = c("a_id"))
+```
+
+We also look at some pairs plots and ensure that there are no worrisome correlation ridges.
+
+Because we set up the stan model to automatically generate factor-specific estimates of alpha, we can extract those values directly and then label them using the same iterative process as the STAN model does.
+```{r}
+a_pred <- rstan::extract(fit_DET_binom_Pentagon_Interact, "a_pred")[[1]] #a (short for alpha) was used to represent to probability of success in our binomial model. It is equivalent to DET
+#Assign conditions to predictions by iterating through species and sources, as in the STAN model
+i <- 0
+interaction_factors <- vector(length = ncol(a_pred))
+for(j in levels(DETs_Pentagon$Species)){
+  for(k in levels(DETs_Pentagon$Source)){
+    i <- i+1
+    interaction_factors[i] <- paste(j,k, sep = "X") #sep value used for parsing into factors later
+  }
+}
+colnames(a_pred) <- interaction_factors
+```
+
+Finally, we can plot the posterior distributions of the alpha estimates, allowing us to make inferences as described in the results section of the associated manuscript "Mild movement sequence repetition in five primate species and evidence for a taxonomic divide in cognitive mechanisms"
+
+```{r ggridgeplot Pentagon}
+pal <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442")
+plot_colors <- rep(pal, each = 4)
+names(plot_colors) <- colnames(a_pred)
+
+base_plot <- a_pred %>% 
+  data.frame() %>%
+  pivot_longer(cols = everything(), names_to = c("Species", "Source"), names_sep = "X", values_to = "alpha") %>%
+  mutate(Source = factor(Source, levels = c("Learning_Factor1", "Learning_Factor1.2", "Learning_Factor2", "Experimental"))) %>% 
+  ggplot()
+
+base_plot <- base_plot + 
+  geom_density_ridges(aes(x = alpha, y = interaction(Source, Species), fill = Species), rel_min_height = 0.01) +
+  theme_classic() +
+  theme(panel.grid.major.y = element_line(color = "grey", linetype = "dotted")) +
+  geom_vline(aes(xintercept = 0),color = "grey", linetype = "dotted")  +
+  scale_y_discrete(labels = c("Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical", "Learning Factor 1", "Learning Factor 1.2", "Learning Factor 2", "Empirical")) +
+  scale_fill_manual(values = pal, labels = c("Vervet")) +
+  labs(y = "Source", x = "logit(DET)")
+
+ggsave(file = "../Results/Credible Intervals of alpha_Pentagon.tiff",
+       plot = base_plot,
+       units = "px",
+       dpi = 300)
+
+base_plot
+```
+
+
+
+

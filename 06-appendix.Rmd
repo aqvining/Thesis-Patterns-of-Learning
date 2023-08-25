@@ -1,0 +1,105 @@
+`r if(knitr:::is_latex_output()) '\\appendix'`
+
+`r if(!knitr:::is_latex_output()) '# (APPENDIX) Appendix {-}'` 
+
+<!--
+If you feel it necessary to include an appendix, it goes here.
+-->
+
+
+# Appendix
+
+This dissertation is supported by several hundred pages of supplementary code, analysis, and figures. These documents, along with a completely reproducible workflow, can be found in an online repository at github.com/aqvining/Thesis-patterns_of_learning. Here, we offer a guide to important supplements (included those cited in the preceding chapters) and where to find them within the main repository.
+
+## Chapter 1
+
+1.1 - Chapter 1 Markdown
+ 
+Location: "Do Primates Trapline/DOCS/Movement Sequence Repetition.Rmd"
+
+Description: The document used to compile Chapter 1. Primarily text and figure embedding. The bulk of analysis for Chapter 1 was competed in other documents (see below).
+ 
+1.2 - Chapter 1 Data Notebook
+ 
+Location: "Do Primates Trapline/CODE/Data_Notebook.pdf"
+
+Description: A reproducible report on all analyses included in chapter 1. Includes 1) pointers to the code used to clean and prepare data used for the chapter, 2) Detailed written and visual assessment of model validity for the learning rate models used in chapter 1, 3) Code to reproduce all Chapter 1 figures, and 4) detailed analysis of model posterior distributions. The markdown version of this PDF is also available using the .rmd extension.
+ 
+1.3 - Chapter 1 Simulation Validation
+ 
+Location: "Do Primates Trapline/CODE/Simulation-Validation.html"
+
+Description: Simulations in Chapter 1 were based on the descriptions of a model from another paper (Reynolds et al, 2013), with modifications. In this report, I reproduce the results of the Reynolds paper, validating that differences in our model were the result of our intentional changes and not due to errors or differences in code. I also note how the Reynolds model performs in the novel arrays used in Chapter 1, discussing the importance of our model modifications for these more complex environments. The markdown version is also available using the .rmd extension. 
+ 
+1.4 - Initial analysis of DET metric
+ 
+Location: "Do Primates Trapline/CODE/Primate DET Report.html"
+
+Description: This report details how the properties of the DET metric were explored and understood, leading the selection of analysis parameters used and described in Chapter 1. It includes several insights into the use of the DET metric for studying primate behavior not included in the main body due to their complexity and tangential relevance. Some caution should be used, however, as the models used for analysis in this report are not as comprehensive as those in the final analysis, and the document has not been updated or modified from its original form.
+ 
+1.5 - Final Analysis of primate sequence DET
+ 
+Location: "Do Primates Trapline/CODE/DET_Analysis.html"
+
+Desription: A companion to the Data Notebook, this documents provides a complete and reproducible description of the models used to analyze the DET of primate movement sequences through experimental arrays. This includes code, model diagnostics, detailed descriptions of posterior distributions, and written analysis. 
+ 
+## Chapter 2
+
+2.1 Chapter 2 Markdown
+
+Location: "Balsa_Spatial_Analysis/DOCS/The-movement-and-behavior-of-kinkajous-within-a-dynamic-foraging-hotspot.Rmd"
+
+Description: The analysis and writing of this chapter were integrated. Thus, this document contains all of the code necessary to produce Chapter 2, including the text markdown, analysis, statistical reports, and figures.  This also include figures and statistics for model diagnostics and in-depth analysis that are hidden in the final PDF version.
+
+2.2 Chapter 2 Reference Simulations
+
+Location: "Balsa_Spatial_Analysis/CODE/Reference_Model1_Analysis.html"
+
+Description: A detailed description of the simulations used to create reference data, and the code used. The markdown version is also available using the .Rmd extension
+
+2.3 Initial Analysis Short Report
+
+Location: "Balsa_Spatial_Analysis/CODE/Kinkajou_Scan_Analysis.html
+
+Description: An initial report on the raw data data used in chapter 2 along-side an early analytical model. Includes many figures included in the main markdown code, but hidden and not described in the output of that document. This version is thus easier to access and read for anybody interested in a more detailed breakdown of the data.
+
+## Chapter 3
+
+3.1 Chapter 3 Markdown
+
+Location: "BCI Anniversary/DOCS/Navigation on BCI markdown.Rmd"
+
+Description: Markdown of text and figure embedding for Chapter 3. Analysis for this chapter was not integrated into the markdown body, and can be found in supplementary documents (see below).
+
+3.2 Chapter 3 Data Preparation
+
+Location: "BCI Anniversary/CODE/Path_Segmentation.html"
+
+Description: Detailed descriptions, figures, and code for processing raw data for chapter 3. Also available in markdown using .Rmd extension
+
+3.3 Chapter 3 Reproducible Analysis
+
+Location: "BCI Anniversary/DOCS/Data-Notebook.html"
+
+Description: A more thorough analysis of the models and statistics presented in Chapter 3, including model diagnostics and code used to analyze the data and create figures. The markdown version is available in the CODE folder using the .RMD extension.
+
+## Chapter 4
+
+4.1 Chapter 4 Markdown
+
+Location: "Segment Linearity/DOCS/manuscript.Rmd"
+
+Description: Integrated markdown of Chapter 4 text, code, and analysis, sufficient to reproduce the full chapter. Many of the more detailed figures are hidden in the final output.
+
+4.2 Chapter 4 Data preparation
+
+Location: Segment Linearity/CODE/Path-Clustering-and-Segmentation.Rmd
+
+Description: Code and figures used to process raw data, with descriptions and explanations of parameter settings used for each step in the data processing pipeline. 
+
+4.3 Chapter 4 Model Development
+
+Location: Segment Linarity/CODE/Gamma-Generalized-Ricker-Model-Development
+
+Description: The final model presented in Chapter 4 is complex. It was developed iteratively, testing each new parameter and its prior distributions to determine its effect on the models health and the properties of the model when fit to the data. Each model tested in contained in this document, as well as brief written descritption of what was learned at each stage.
+

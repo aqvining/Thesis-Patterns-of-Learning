@@ -1,0 +1,36 @@
+---
+#bibliography: bib/references2.json
+---
+
+# The Movement and Behavior of Kinkajous in a Dynamic Foraging Hotspot {#math-sci}
+
+<!-- This adds a different "short title" -->
+\chaptermark {Movement in Hotspot}
+
+Authors: Alexander Q. Vining^1,2,3,4^, Chase L. Núñez^2,3^, Nele Stockmeyer^3^, Margaret C. Crofoot^2,3,4,5,6^ \par
+
+\begin{scriptsize}
+1.	Animal Behavior Graduate Group, University of California, Davis, USA
+
+2.	Department for the Ecology of Animal Societies, Max Planck Institute of Animal Behavior, Konstanz, Germany
+
+3.	Department of Biology, University of Konstanz, Konstanz, Germany
+
+4.	Smithsonian Tropical Research Institute, Balboa, Republic of Panamá
+
+5.	Center for the Advanced Study of Collective Behavior, University of Konstanz, Konstanz, Germany
+
+6.	Department of Anthropology, University of California, Davis, CA, United States
+\par
+\end{scriptsize}
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt2, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("Balsa_Spatial_Analysis/DOCS/The-movement-and-behavior-of-kinkajous-within-a-dynamic-foraging-hotspot.Rmd", envir = environment(), quiet = TRUE))
+```

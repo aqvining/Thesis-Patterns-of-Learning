@@ -1,0 +1,24 @@
+# Batch Processing in Thermal Studio Pro
+#lab-notebook
+#thermal-video
+#balsa
+
+Used thermal studio pro demo mode to do video conversion
+
+Batch processing with
+1. Clear spotometers
+2. Scale minimum -> 20C
+3. Scale Maximum -> 28C
+4. Palette -> lava
+5. Isotherm -> Above, 84F, green
+6. Clear text annotations
+7. Clear all measurements
+8. Create AVI -> 30 FPS, 99 quality
+
+Looks good, remaining issues:
+
+Remove legends, watermark
+
+2.6.21 Addendum
+Clearing “Overlay enabled” appears to remove all layers, INCLUDING the legends and the watermark. As far as I can tell this is a hack that basically allows use of pro features in the demo.
+

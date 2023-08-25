@@ -1,0 +1,10 @@
+# Daily Log June 2 2021
+
+#lab-notebook/daily-log
+
+Able to reproducibly create .avi from .csq with all conversions. 84F appears to be a good setting on isotherm to highlight kinkajous. Disabling overlay removes demo version watermark, unclear if this will last or get patched out some day. Files currently unorganized in Documents/FLIR/Thermal Studio Output. #balsa #thermal-video
+
+Wrote modify_by_group with Kat. Still need to develop examples and finish documenting before upload to AQVToolbox package and sharing with #R group.
+
+Met w/ Nele, discussed hour-glass format of scientific writing and practiced freehand organization of main concepts
+[image:DBD63B25-137D-48F6-BF32-F9096918BADB-36773-0000034C5612338A/Untitled_Artwork.tiff]

@@ -1,0 +1,14 @@
+# Daily Log May 26 2021
+#lab-notebook/daily-log
+#balsa
+#thermal-video
+#lemurs/sleep
+
+Uploaded Data for lemur sleep manuscript to github: 
+https://github.com/aqvining/Lemur_Sleep_Site_Enrichment
+
+Backed up manuscript in private server folder
+
+Documented steps for converting thermal videos. See note “Steps for converting thermal videos”
+ -Carter’s code for using the FLIR Science File SDK is unusable in its current form. To finish this document (and progress on this project I need to either wait for Carter to get back and help me decipher the magic numbers in his code (June 11 he says) , try to do conversions using FLIRs thermal studio tool, or figure out Carters process independently, which would takes days at least.
+

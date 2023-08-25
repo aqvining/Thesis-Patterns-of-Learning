@@ -1,0 +1,947 @@
+---
+title: "FFT Path Segment Analysis"
+author: "Alexander Vining"
+date: "2022-10-25"
+output: html_document
+---
+
+#Overview
+
+The purpose of this analysis is to understand how four different mammal species on Barro Colorado Island, Panama, move within and between locations that are visited repeatedly. This analysis follows the following steps. The first three steps were completed in the document "Path Clustering and Segmentation"
+1) Load and clean data on a) the movements (GPS tracks) of animals on the island b) spatial data on the tree crown boundaries of dipteryx oliefera, and important food source for all four species during the time of tracking, and c) spatial data on the boundaries of the island., 
+2) Identify, for each individual animal, spatial boundaries of locations which are visited often and/or used extensively 
+3) Break all GPS tracks into "visitation" and "transit" segments
+4) Analyze the movement properties of transit and visitation segments
+
+Based on the results of the first three steps, we begin linearity analysis using data clustered in this way so as to minimize computational complexity while maintaining as much accuracy as possible.
+
+#Data Preparation
+
+```{r setup}
+library(dplyr)
+library(sf)
+library(lwgeom)
+library(ggplot2)
+library(ggridges)
+library(RColorBrewer)
+library(purrr)
+library(tidyr)
+library(rstan)
+
+load(file = "../Data/processed/POIs_05_50.Rdata")
+load(file = "../Data/processed/clustered_sfs_05_50.Rdata")
+load(file = "../Data/processed/FFT_segments_05_50.Rdata")
+
+FFT_segments_05_50 <- FFT_segments_05_50 %>% map_dfr(~ .x) #map from list to one data frame
+```
+
+The data loaded above contain actual distances travelled and the the clusters traveled between, but not the linear distance between these clusters. We calculate this below and add it to our data-frame
+
+Notes
+1. This processing takes a while. Instead of calculating the linear distance for each transit as it appears in the data, it would be probably be more efficient to create a key with all possible transits and their linear distances, then reference this for each transit actually made in the data
+2. This would be better placed in the clustering document than the analysis document.
+
+```{r get-transit-min-dist, eval = FALSE}
+day_segments <- filter(FFT_segments_05_50, individual.local.identifier == "Abby.5767", day == 1)
+POIs <- POIs_05_50[["Abby.5767"]]
+test <- clustered_sfs_05_50[["Abby.4652"]] %>% filter(day == 1)
+
+clustered_sf <- test
+clusters <- POIs
+
+add_Dday <- function(day_segments, POIs, progress = NA){
+  #inputs:
+  ##day_segments: spatial features data_frame with columns "lengths" (num), "values" (num), "start_time" (POSIXct), "end_time" (POSIXct), and "linestring"(sfc)
+  ##POIs: A list with spatial feature polygons
+  ##progress: for use with group_modify or other iterators, this will be printed during function execution
+  #output: a spatial features dataframe
+  #description: processes transit segments (values == 0 in day_segments). First, checks that all transit segments are preceded and followed by a cluster visit (values == cluster id), removing others. Uses this information to identify start and end clusters on transit segments, and calculates the distance between these clusters in POIs. Returns only transit segments.
+  print(progress)
+  
+  #check for and remove sequential transit sections. (These were introduced in the data by a bug that has been fixed. If this warning appears, the input has probably been improperly prepared)
+  while(sum(rle(day_segments$values)$lengths > 1) > 0) {
+    warning("adjacent revisit detected and removed")
+    if(! NA %in% progress) print(progress)
+    
+    # because we expect all lengths in rle to be 1, the position of the first non-one number will also give the index of the first segment that is followed by a segment of the same "value" (cluster). We remove that segment below
+    revisit <- which(rle(day_segments$values)$lengths > 1)[1] 
+    day_segments <- day_segments[-revisit[1],]
+  }
+  
+  #individual must visit at least two cluster for a transit to exist. If not the case, return a 1 row data.frame with appropriate columns. These will need to be filtered out later. (Ideally this would return an empty data frame and be automatically excluded, but that confuses group_modify when calling over many segments)
+  if(sum(day_segments$values != 0) < 2) return(data.frame(No_Segments = TRUE)) 
+  
+  #process transit segments
+  day_segments_modified <- day_segments %>% 
+    mutate(Start_Cluster = c(NA, values[-length(values)]), End_Cluster = c(values[-1], NA), fixes = lengths, length = st_length(linestring)) %>% #gets the cluster before and after each segment and adds to new columns
+    filter(values == 0) %>% #we only care about the transit segments for this analysis, indicated in the values column by a 0
+    drop_na() %>% 
+    dplyr::select(!c(values, lengths)) %>% #column is redundant post-filtering
+    mutate(D = st_distance(POIs[Start_Cluster,], POIs[End_Cluster,], by_element = TRUE))  #D is the minimum straight-line distance between the start cluster and the end cluster
+  
+  return(day_segments_modified)
+}
+
+#add transit information to segments data
+FFT_segments_05_50_modified <- FFT_segments_05_50 %>% 
+  group_by(individual.local.identifier, day) %>% 
+  group_modify(~ add_Dday(.x, POIs_05_50[[.y$individual.local.identifier]], progress = .y)) %>%
+  filter(No_Segments == FALSE) %>% 
+  dplyr::select(! No_Segments)
+
+add_experience <- function(individual_segments, ID){
+  individual_segments <- individual_segments %>% 
+    mutate(transitID = factor(paste(ID, Start_Cluster, End_Cluster, sep = "_"))) %>% 
+    group_by(transitID) %>% 
+    mutate(transitExp = row_number()) %>% 
+    ungroup()
+  return(individual_segments)
+}
+
+#determine previous experience with each transit
+FFT_segments_05_50_modified <- FFT_segments_05_50_modified %>% group_by(individual.local.identifier) %>% group_modify(~add_experience(.x, .y)) %>% ungroup()
+
+save(FFT_segments_05_50_modified, file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+```
+
+# Data Visualization
+
+```{r data-viz}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+FFT_segments_05_50_modified %>% ggplot(aes(x = as.numeric(D), y = as.numeric(length))) + 
+  geom_point(alpha = 0.1) + 
+  geom_smooth() +
+  theme_classic()
+```
+# Model Fitting
+
+## Model 0: Linearity by distance
+```{r model0-stan-fit}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0Data <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+model0Data_Stan <- list(
+  N = nrow(model0Data),
+  y = as.numeric(model0Data$D/model0Data$length),
+  D = as.numeric(model0Data$D * 0.01) #scale down data for better processing with logit link
+)
+options(mc.cores = parallel::detectCores())
+model0_fit <- stan(file = "Model0.stan",
+                   data = model0Data_Stan,
+                   chains = 4,
+                   iter = 2000,
+                   warmup = 1000)
+
+save(model0_fit, file = "../results/model0_fit")
+```
+
+```{r model0-analysis}
+model0_fit
+pairs(model0_fit)
+```
+
+## Model 0a: Path length by log-normal linear distance
+```{r model0a-stan-fit}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0aData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) #remove data where the animal returned to its starting cluster
+
+model0aData_Stan <- list(
+  N = nrow(model0aData),
+  length = as.numeric(model0aData$length),
+  d = as.numeric(model0aData$D)
+)
+options(mc.cores = parallel::detectCores())
+model0a_fit <- stan(file = "Model0a.stan",
+                   data = model0aData_Stan,
+                   chains = 4,
+                   iter = 2000,
+                   warmup = 1000)
+
+save(model0a_fit, file = "../results/model0a_fit")
+```
+
+```{r model0a-posteriors}
+load(file = "../results/model0a_fit")
+model0a_draws <- extract(model0a_fit)
+
+
+model0a_draws %>% as.data.frame() %>% select(mu, sigma, beta) %>% pivot_longer(mu:beta, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r model0a-residuals}
+model0a_predictions <- data.frame(log_length_hat_mean = apply(model0a_draws$log_length_hat, MARGIN = 2, mean), 
+                                  log_length_hat_sd = apply(model0a_draws$log_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0a_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0a_draws$pearson_resid, MARGIN = 2, sd))
+
+model0a_predictions %>% ggplot() + geom_point(aes(x = log_length_hat_mean, y = pearson_resid_mean), alpha = 0.1)
+#whoa, lots of positive skew in the residuals! 
+summary(model0a_predictions$pearson_resid_mean)
+#The median residual is below zero, but these residuals are definitely not normally distributed!
+#Lower edge is likely related to the minimum bound of path length (it cannot be below the linear distance). Need to confirm this, and consider how it affects our analysis
+
+sum(model0a_predictions$pearson_resid_mean ^2)
+```
+
+
+## Model 0B - Ricker curve Gamma Model
+```{r ricker-curve-exploration}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0bData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0bData_Stan <- list(
+  N = nrow(model0bData),
+  delta_length = (as.numeric(model0bData$length) - as.numeric(model0bData$D))/1000,
+  dist = as.numeric(model0bData$D)/1000
+)
+x = seq(0,3, by = 0.05)
+y1 = 1 + log(x) - (2*x)
+y2 = 1 + log(x) - (3*x)
+y3 = 2 + log(x) - (3*x)
+y4 = 2 + log(x) - (4*x)
+y5 = 4 + log(x) - (10 * x)
+y6 = 0.5 + log(x) - (2*x)
+y7 = -0.5 + log(x) - (2*x)
+
+{
+plot(model0bData_Stan$dist, model0bData_Stan$delta_length)
+lines(x, exp(y1), col = "blue")
+lines(x, exp(y2), col = "green")
+lines(x, exp(y3), col = "red")
+lines(x, exp(y4), col = "purple")
+lines(x, exp(y5), col = "yellow")
+lines(x, exp(y6), col = "orange")
+lines(x, exp(y7), col = "pink")
+}
+```
+
+As of the last run, I don't think this model is fit properly, due to a misunderstanding with inverse-phi. See https://discourse.mc-stan.org/t/gamma-regression-in-stan-very-different-than-frequentist-from-lme4/6880/15
+
+```{r model0b-gamma}
+options(mc.cores = parallel::detectCores())
+model0b_fit <- stan(file = "Model0b.stan",
+                   data = model0bData_Stan,
+                   chains = 4,
+                   iter = 500,
+                   warmup = 250)
+
+save(model0b_fit, file = "../results/model0b_fit")
+
+```
+
+```{r model0b-posteriors}
+load(file = "../results/model0b_fit")
+model0b_draws <- extract(model0b_fit)
+
+
+model0b_draws %>% as.data.frame() %>% select(a, b, inverse_phi) %>% pivot_longer(a:inverse_phi, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+```{r model0b-diagnostics}
+traceplot(model0b_fit, pars = c("a", "b", "inverse_phi", "lp__"))
+```
+```{r plot-expectations}
+x = seq(0,3, by = 0.05)
+y = mean(model0b_draws$a) * x * exp(-mean(model0b_draws$b) * x)
+{
+plot(model0bData_Stan$dist, model0bData_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y, col = "red")
+}
+```
+
+```{r model0b-residuals}
+model0b_predictions <- data.frame(delta_length_hat_mean = apply(model0b_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model0b_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0b_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0b_draws$pearson_resid, MARGIN = 2, sd))
+
+model0b_predictions %>% ggplot() + geom_point(aes(x = delta_length_hat_mean, y = pearson_resid_mean), alpha = 0.1)
+
+summary(model0b_predictions$pearson_resid_mean)
+
+sum(model0b_predictions$pearson_resid_mean ^2)
+
+```
+
+
+## Model 0C - Jenns Model
+
+```{r model0c-Jenns}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0cData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) #remove data where the animal returned to its starting cluster
+
+model0cData_Stan <- list(
+  N = nrow(model0cData),
+  L = as.numeric(model0cData$length)/1000,
+  d = as.numeric(model0cData$D)/1000
+)
+options(mc.cores = parallel::detectCores())
+model0c_fit_nolog <- stan(file = "Model0c.stan",
+                   data = model0cData_Stan,
+                   chains = 4,
+                   iter = 500,
+                   warmup = 250)
+
+save(model0c_fit_nolog, file = "../results/model0c_fit_nolog.Rdata")
+
+```
+
+```{r}
+FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>%  ggplot(aes(x = as.numeric(D), y = as.numeric(length))) + 
+  geom_point(alpha = 0.1) + 
+  geom_smooth() +
+  theme_classic()
+```
+
+```{r model0a-posteriors}
+load(file = "../results/model0c_fit_nolog.Rdata")
+model0c1_draws<- extract(model0c_fit_nolog)
+
+
+model0c1_draws %>% as.data.frame() %>% select(b1, b2, b3, b4, sigma) %>% pivot_longer(b1:sigma, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+
+
+```
+
+```{r}
+traceplot(model0c_fit_nolog, pars = c("b1", "b2", "b3", "b4", "sigma", "lp__"))
+pairs(model0c_fit_nolog, pars = c("b1", "b2", "b3", "b4", "sigma", "lp__"))
+```
+```{r plot-expectations}
+x = seq(0,3, by = 0.05)
+y = mean(model0c1_draws$b1) + mean(model0c1_draws$b2) * x - exp(mean(model0c1_draws$b3) + mean(model0c1_draws$b4) * x)
+{
+plot(model0cData_Stan$d, model0cData_Stan$L, col = alpha("grey40", 0.01), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0cData_Stan$d, model0cData_Stan$L, col = alpha("grey40", 0.01), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0c-residuals}
+model0c_predictions_1 <- data.frame(length_hat_mean = apply(model0c1_draws$length_hat, MARGIN = 2, mean), 
+                                  length_hat_sd = apply(model0c1_draws$length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0c1_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0c1_draws$pearson_resid, MARGIN = 2, sd))
+
+model0c_predictions_1 %>% ggplot() + geom_point(aes(x = length_hat_mean, y = pearson_resid_mean), alpha = 0.1)
+
+summary(model0c_predictions_1$pearson_resid_mean)
+
+sum(model0c_predictions_1$pearson_resid_mean^2)
+
+```
+## Model 0C2 - Jenns Model (Gamma)
+```{r model0c-Jenns}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0cData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0c2Data_Stan <- list(
+  N = nrow(model0cData),
+  delta_L = (as.numeric(model0cData$length) - as.numeric(model0cData$D))/1000,
+  d = as.numeric(model0cData$D)/1000
+)
+
+x = seq(0,3, by = 0.05)
+y1 = 0.05 + 0.01 * x - exp(-2 + (-0.5* x)) + exp(-2)
+{
+plot(model0c2Data_Stan$d, model0c2Data_Stan$delta_L, col = alpha("grey40", 0.05), pch = 16, cex = 0.5)
+lines(x, y1, col = "blue")
+#lines(x, y2, col = "green")
+#lines(x, y3, col = "red")
+#lines(x, y4, col = "purple")
+#lines(x, y5, col = "yellow")
+#lines(x, y6, col = "orange")
+#lines(x, y7, col = "pink")
+}
+```
+
+```{r}
+options(mc.cores = parallel::detectCores())
+model0c2_fit <- stan(file = "model0c2.stan",
+                   data = model0c2Data_Stan,
+                   chains = 4,
+                   iter = 500,
+                   warmup = 250)
+
+save(model0c2_fit, file = "../results/model0c2_fit")
+
+```
+```{r}
+traceplot(model0c2_fit, pars = c("b1", "b2", "b3", "b4", "alpha", "lp__"))
+pairs(model0c2_fit, pars = c("b1", "b2", "b3", "b4", "alpha", "lp__"))
+```
+
+```{r model0c-posteriors}
+load(file = "../results/model0c2_fit")
+model0c2_draws <- extract(model0c2_fit)
+
+
+model0c2_draws %>% as.data.frame() %>% select(b1, b2, b3, b4, alpha) %>% pivot_longer(b1:alpha, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.05)
+y = mean(model0c2_draws$b1) + mean(model0c2_draws$b2) * x - exp(mean(model0c2_draws$b3) + mean(model0c2_draws$b4) * x)
+{
+plot(model0c2Data_Stan$d, model0c2Data_Stan$delta_L, col = alpha("grey40", 0.01), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0c2Data_Stan$d, model0c2Data_Stan$delta_L, col = alpha("grey40", 0.01), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0c-residuals}
+model0c2_predictions <- data.frame(delta_L_hat_mean = apply(model0c2_draws$delta_L_hat, MARGIN = 2, mean), 
+                                  delta_L_hat_sd = apply(model0c2_draws$delta_L_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0c2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0c2_draws$pearson_resid, MARGIN = 2, sd))
+
+model0c2_predictions %>% ggplot() + geom_point(aes(x = delta_L_hat_mean, y = pearson_resid_mean), alpha = 0.1)
+
+summary(model0c2_predictions$pearson_resid_mean)
+
+sum(model0c2_predictions$pearson_resid_mean^2)
+
+```
+
+## Model 0D - Shepherd curve Gamma Model
+```{r Shepherd-curve-exploration}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0dData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0dData_Stan <- list(
+  N = nrow(model0dData),
+  delta_length = as.numeric(model0dData$length) - as.numeric(model0dData$D),
+  dist = as.numeric(model0dData$D)
+)
+x = 0:2500
+y1 = 3000*x/(20+x^1.2)
+y2 = 3000*x/(50+x^1.2)
+y3 = 3000*x/(1000+x^1.2)
+y4 = 4000*x/(500+x^1.3)
+y5 = 10000*x/(500+x^1.3)
+y6 = 10000*x/(500+x^1.4)
+y7 = 6000*x/(200+x^1.4)
+
+
+{
+plot(model0dData_Stan$dist, model0dData_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y1, col = "blue")
+lines(x, y2, col = "green")
+lines(x, y3, col = "red")
+lines(x, y4, col = "purple")
+lines(x, y5, col = "yellow")
+lines(x, y6, col = "orange")
+lines(x, y7, col = "pink")
+}
+
+y8 = 1000*x/(200+x^0.9)
+y9 = 100*x/(200+x^0.9)
+y10 = 100*x/(50+x^0.9)
+y11 = 100*x/(50+x^0.5)
+y12 = 1000*x/(-100+x^1.2)
+y13 = -1000*x/(50+x^1.4)
+y14 = 100*x/(50+x^-1)
+{
+plot(model0dData_Stan$dist, model0dData_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y8, col = "blue")
+lines(x, y9, col = "green")
+lines(x, y10, col = "red")
+lines(x, y11, col = "purple")
+lines(x, y12, col = "yellow") #b must be positive
+lines(x, y13, col = "orange") #a must be positive
+lines(x, y14, col = "pink") #c can be negative, but doesn't make much sense given the data
+}
+
+#exploring negative c
+# x = seq(0, 5, by = 0.1)
+# y = 5 * x/(2 + x ^-5)
+# plot(x,y)
+```
+
+#Model which fits a dispersion, then determines alpha and beta for the gamma distribution a x_i
+```{r model0d-gamma}
+options(mc.cores = parallel::detectCores())
+model0d_fit <- stan(file = "Model0d.stan",
+                   data = model0dData_Stan,
+                   chains = 4,
+                   iter = 2000,
+                   warmup = 1000)
+
+save(model0d_fit, file = "../results/model0d_fit")
+
+```
+
+# Model which fits alpha, then determines beta and the dispersion for the gamma distribution a x_i
+
+```{r model0d2-gamma}
+options(mc.cores = parallel::detectCores())
+model0d2_fit <- stan(file = "Model0d2.stan",
+                   data = model0dData_Stan,
+                   chains = 4,
+                   iter = 2000,
+                   warmup = 1000)
+
+save(model0d2_fit, file = "../results/model0d2_fit")
+
+```
+
+# Scaling y for better fitting
+
+```{r Shepherd-curve-exploration}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0dData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0d3Data_Stan <- list(
+  N = nrow(model0dData),
+  delta_length = (as.numeric(model0dData$length) - as.numeric(model0dData$D))/1000,
+  dist = as.numeric(model0dData$D/1000)
+)
+x = seq(0, 2.5, by = 0.01)
+y1 = 0.3*x/(0+x^0) #linear
+y2 = 0.3*x/(0.05+x^1.2)
+y3 = 3*x/(0.1+x^0.1)
+y4 = 0.4*x/(0.5+x^1.3)
+y5 = 0.1*x/(0.5+x^1.3)
+y6 = 0.1*x/(0.2+x^1.4)
+y7 = (0.1*x)/(0+x^1.4)
+
+
+{
+plot(model0d3Data_Stan$dist, model0d3Data_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y1, col = "blue")
+lines(x, y2, col = "green")
+lines(x, y3, col = "red")
+lines(x, y4, col = "purple")
+lines(x, y5, col = "yellow")
+lines(x, y6, col = "orange")
+lines(x, y7, col = "pink")
+}
+
+```
+
+```{r model0d3-gamma}
+options(mc.cores = parallel::detectCores())
+model0d3_fit <- stan(file = "Model0d3.stan",
+                   data = model0d3Data_Stan,
+                   chains = 4,
+                   iter = 2000,
+                   warmup = 1000)
+
+save(model0d3_fit, file = "../results/model0d3_fit")
+
+```
+
+```{r model0d-diagnostics}
+traceplot(model0d_fit, pars = c("a", "b", "c", "phi", "lp__"))
+traceplot(model0d2_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+traceplot(model0d3_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+```
+
+```{r model0d-posteriors}
+load(file = "../results/model0d3_fit")
+model0d3_draws <- extract(model0d3_fit)
+
+
+model0d3_draws %>% as.data.frame() %>% select(a, b, c, alpha) %>% pivot_longer(a:alpha, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.05)
+y = mean(model0d3_draws$a)*x/(mean(model0d3_draws$b) + x^mean(model0d3_draws$c))
+{
+plot(model0d3Data_Stan$dist, model0d3Data_Stan$delta_length, col = alpha("grey40", 0.01), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0d3Data_Stan$dist, model0d3Data_Stan$delta_length, col = alpha("grey40", 0.01), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0d-residuals}
+model0d3_predictions <- data.frame(delta_length_hat_mean = apply(model0d3_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model0d3_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0d3_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0d3_draws$pearson_resid, MARGIN = 2, sd))
+
+model0d3_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02) + geom_smooth() + theme_classic()
+
+model0d3_predictions %>% ggplot(aes(x = as.numeric(model0d3Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model0d3_predictions %>% ggplot(aes(x = as.numeric(model0d3Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+summary(model0d3_predictions$pearson_resid_mean)
+
+sum(model0d3_predictions$pearson_resid_mean ^ 2)
+
+```
+
+## Perrson Model Exploration
+
+```{r Perrson-curve-exploration}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0eData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal traveled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0eData_Stan <- list(
+  N = nrow(model0eData),
+  delta_length = (as.numeric(model0eData$length) - as.numeric(model0eData$D))/1000, #scale to km
+  dist = as.numeric(model0eData$D)/1000
+)
+x = 1:3000
+# y = A * ((x/b)*exp(1-(x/b)))^c
+y1 = 700 * ((x/200)*exp(1-(x/200)))^2
+y2 = 500 * ((x/200)*exp(1-(x/200)))^2
+y3 = 500 * ((x/100)*exp(1-(x/100)))^2
+y4 = 500 * ((x/100)*exp(1-(x/100)))^1
+y5 = 500 * ((x/100)*exp(1-(x/100)))^0.2
+y6 = 500 * ((x/100)*exp(1-(x/100)))^0
+
+
+{
+plot(model0eData_Stan$dist*1000, model0eData_Stan$delta_length*1000, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y1, col = "blue")
+lines(x, y2, col = "green")
+lines(x, y3, col = "red")
+lines(x, y4, col = "purple")
+lines(x, y5, col = "yellow")
+lines(x, y6, col = "orange")
+}
+
+```
+
+```{r, perrson-km-scale}
+x = seq(0, 3, by = 0.01)
+# y = A * ((x/b)*exp(1-(x/b)))^c
+y1 = 0.7 * ((x/.200)*exp(1-(x/.200)))^2
+y2 = 0.5 * ((x/.200)*exp(1-(x/.200)))^2
+y3 = 0.5 * ((x/.100)*exp(1-(x/.100)))^2
+y4 = 0.5 * ((x/.100)*exp(1-(x/.100)))^1
+y5 = 0.5 * ((x/.100)*exp(1-(x/.100)))^0.2
+y6 = 0.5 * ((x/.100)*exp(1-(x/.100)))^0
+y7 = 2 * ((x/100)*exp(1-(x/100)))^0.465
+
+
+{
+plot(model0eData_Stan$dist, model0eData_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y1, col = "blue")
+lines(x, y2, col = "green")
+lines(x, y3, col = "red")
+lines(x, y4, col = "purple")
+lines(x, y5, col = "yellow")
+lines(x, y6, col = "orange")
+lines(x, y7, col = "pink")
+}
+
+```
+### Persson Model Fit
+
+```{r model0e-Perrson}
+options(mc.cores = parallel::detectCores())
+model0e_fit <- stan(file = "Model0e.stan",
+                   data = model0eData_Stan,
+                   chains = 4,
+                   iter = 500,
+                   warmup = 250)
+
+save(model0e_fit, file = "../results/model0e_fit")
+
+```
+
+```{r model0e-diagnostics}
+traceplot(model0e_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+```
+
+```{r model0d-posteriors}
+load(file = "../results/model0e_fit")
+model0e_draws <- extract(model0e_fit)
+
+
+model0e_draws %>% as.data.frame() %>% select(a, b, c, alpha) %>% pivot_longer(a:alpha, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y = mean(model0e_draws$a)*((x/mean(model0e_draws$b)) *exp(1-x/(mean(model0e_draws$b))))^mean(model0e_draws$c)
+{
+plot(model0eData_Stan$dist, model0eData_Stan$delta_length, col = alpha("grey40", 0.01), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0eData_Stan$dist, model0eData_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0e-residuals}
+model0e_predictions <- data.frame(delta_length_hat_mean = apply(model0e_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model0e_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0e_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0e_draws$pearson_resid, MARGIN = 2, sd))
+
+model0e_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model0e_predictions %>% ggplot(aes(x = as.numeric(model0eData_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model0e_predictions %>% ggplot(aes(x = as.numeric(model0eData_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+summary(model0e_predictions$pearson_resid_mean)
+
+sum(model0e_predictions$pearson_resid_mean ^2)
+
+```
+
+### Persson Truncated Data
+
+```{r model0e2-Perrson}
+
+model0e2Data <- FFT_segments_05_50_modified %>% filter(as.numeric(D) > 10) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal traveled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000
+)
+options(mc.cores = parallel::detectCores())
+model0e2_fit <- stan(file = "Model0e2.stan", #same as Model0e.stan
+                   data = model0e2Data_Stan,
+                   chains = 4,
+                   iter = 500,
+                   warmup = 250)
+
+save(model0e2_fit, file = "../results/model0e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+traceplot(model0e2_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+pairs(model0e2_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+```
+
+```{r model0d-posteriors}
+load(file = "../results/model0e2_fit")
+model0e2_draws <- extract(model0e2_fit)
+
+
+model0e2_draws %>% as.data.frame() %>% select(a, b, c, alpha) %>% pivot_longer(a:alpha, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y = mean(model0e2_draws$a)*((x/mean(model0e2_draws$b)) *exp(1-x/(mean(model0e2_draws$b))))^mean(model0e2_draws$c)
+{
+plot(model0e2Data_Stan$dist, model0e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0e2Data_Stan$dist, model0e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0e2-residuals}
+model0e2_predictions <- data.frame(delta_length_hat_mean = apply(model0e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model0e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model0e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model0e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model0e2_predictions %>% ggplot(aes(x = as.numeric(model0e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model0e2_predictions$pearson_resid_mean)
+
+sum(model0e2_predictions$pearson_resid_mean ^2)
+
+```
+### Persson With Species Adjustment
+
+```{r model1e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model1e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)])
+)
+options(mc.cores = parallel::detectCores())
+model1e2_fit <- stan(file = "Model1e2.stan", 
+                   data = model1e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model1e2_fit, file = "../results/model1e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+traceplot(model1e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+pairs(model1e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+summary(model1e2_fit, pars = c("log_a"))$summary
+
+```
+
+```{r model0d-posteriors}
+load(file = "../results/model1e2_fit")
+model1e2_draws <- rstan::extract(model1e2_fit)
+
+
+model1e2_draws %>% as.data.frame() %>% dplyr::select(a, b, c, alpha) %>% pivot_longer(a:alpha, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y = mean(model0e2_draws$a)*((x/mean(model0e2_draws$b)) *exp(1-x/(mean(model0e2_draws$b))))^mean(model0e2_draws$c)
+{
+plot(model0e2Data_Stan$dist, model0e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0e2Data_Stan$dist, model0e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0e2-residuals}
+model0e2_predictions <- data.frame(delta_length_hat_mean = apply(model0e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model0e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model0e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model0e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model0e2_predictions %>% ggplot(aes(x = as.numeric(model0e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model0e2_predictions$pearson_resid_mean)
+
+sum(model0e2_predictions$pearson_resid_mean ^2)
+
+```
+
+## Bi-exponential curve exploration
+
+```{r Shepherd-curve-exploration}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0dData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0d3Data_Stan <- list(
+  N = nrow(model0dData),
+  delta_length = (as.numeric(model0dData$length) - as.numeric(model0dData$D))/1000,
+  dist = as.numeric(model0dData$D)/1000
+)
+x = seq(0, 2.5, by = 0.01)
+# y = a * exp(bx) - c * exp(-dx)
+y1 = 2 * exp(1 * x) - 0.2 * exp(2 * x)
+y2 = 0.2 * exp(1 * x) - 0.2 * exp(-0.5 * x)
+y3 = 0.2 * exp(1 * x) - 0.1 * exp(1 * x)
+y4 = 0.5 * exp(0.5 * x) - 0.2 * exp(-0.5 * x)
+y5 = 0.5 * exp(-0.5 * x) - 0.2 * exp(-0.5 * x)
+y6 = 0.5 * exp(2 * x) - 0.5 * exp(1 * x)
+y7 = 0.5 * exp(-1 * x) - 0.2 * exp(1 * x)
+
+
+{
+plot(model0d3Data_Stan$dist, model0d3Data_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y1, col = "blue")
+lines(x, y2, col = "green")
+lines(x, y3, col = "red")
+lines(x, y4, col = "purple")
+lines(x, y5, col = "yellow")
+lines(x, y6, col = "orange")
+lines(x, y7, col = "pink")
+}
+
+```
+# Vining Model
+
+```{r Shepherd-curve-exploration}
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0dData <- FFT_segments_05_50_modified %>% filter(as.numeric(D) != 0) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal travelled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+
+model0d3Data_Stan <- list(
+  N = nrow(model0dData),
+  delta_length = (as.numeric(model0dData$length) - as.numeric(model0dData$D))/1000,
+  dist = as.numeric(model0dData$D)/1000
+)
+x = seq(0, 2.5, by = 0.01)
+# y = f * x + (a*x*exp(b*x))/(b + x^d)
+y1 = 0.2 * x + (1 * x * exp(0*x))/(0 + x ^ 0) #linear form
+y2 = 0.2 * x + (1 * x * exp(0.5*x))/(0 + x ^ 0.0) #cost of uncertainty
+y3 = 0.2 * x + (1 * x * exp(2*x))/(0 + x ^ 0)     #increasing cost of uncertainty
+y4 = 0.2 * x + (1 * x * exp(0*x))/(0 + x ^ 0.5) #increase in motivation
+y5 = 0.2 * x + (1 * x * exp(0*x))/(1 + x ^ 0) #reduced linear form (less behavioral variance)
+y6 = 0.2 * x + (1 * x * exp(-2*x))/(0 + x ^ 0)
+y7 = 0.2 * x + (20 * x * exp(-8*x))/(2 + x ^ 0.2)
+
+
+{
+plot(model0d3Data_Stan$dist, model0d3Data_Stan$delta_length, col = alpha("grey40", 0.05), pch = 16)
+lines(x, y1, col = "blue")
+lines(x, y2, col = "green")
+lines(x, y3, col = "red")
+lines(x, y4, col = "purple")
+lines(x, y5, col = "yellow")
+lines(x, y6, col = "orange")
+lines(x, y7, col = "pink")
+}
+
+```

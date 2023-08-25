@@ -1,0 +1,45 @@
+---
+#bibliography: bib/references1.json
+---
+# Mild movement sequence repetition in five primate species and evidence for a taxonomic divide in cognitive mechanisms.
+<!-- This adds a different "short title" -->
+\chaptermark {Sequence Repitition}
+Authors: Alexander Q. Vining^1,2,3,4,\dag^, L. Tamara Kumpan^5,6,\dag^, Megan M. Joyce^7^, William D. Aguado^8^, Eve A. Smeltzer^5^, Sarah E. Turner^7^ & Julie A. Teichroeb^5^ \par
+
+\begin{scriptsize}
+1.	Animal Behavior Graduate Group, University of California, Davis, USA
+
+2.	Department for the Ecology of Animal Societies, Max Planck Institute of Animal Behavior, Konstanz, Germany
+
+3.	Department of Biology, University of Konstanz, Konstanz, Germany
+
+4.	Smithsonian Tropical Research Institute, Balboa, Republic of Panamá
+
+5.	Department ofAnthropology, University of Toronto Scarborough, Toronto, ON M1C 1A4, Canada. 
+
+6. School of the Environment, University of Toronto, Toronto, Canada. 
+
+7. Geography, Planning and Environment, Concordia University, Montréal, Canada. 
+
+8. Department of Anthropology, Rutgers University, New Brunswick, USA. 
+
+\dag These authors contributed equally: L. Tamara
+Kumpan and Alexander Q. Vining.
+\par
+\end{scriptsize}
+
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt1, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("Do Primates Trapline\\DOCS\\Movement Sequence Repitition.Rmd", envir = environment(), quiet = TRUE))
+```
+
+
+
+

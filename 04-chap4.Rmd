@@ -1,0 +1,44 @@
+---
+#bibliography: bib/references4.json
+---
+
+# Evidence of diet-mediated learning rates in the route-formation of four sympatric mammal species {#route-learn}
+
+<!-- This adds a different "short title" -->
+\chaptermark {Route Formation}
+
+Authors: Alexander Q. Vining^1,2,3,4^, Damien Caillaud^4,5^, Mark Grote^5^, Shauhin Alavi^2,3^, Roland Kays^4,6,7^, Ben Hirsch^4,5,8^, Margaret C. Crofoot^2,3,4,5,9^ \par
+
+\begin{scriptsize}
+1.	Animal Behavior Graduate Group, University of California, Davis, USA
+
+2.	Department for the Ecology of Animal Societies, Max Planck Institute of Animal Behavior, Konstanz, Germany
+
+3.	Department of Biology, University of Konstanz, Konstanz, Germany
+
+4.	Smithsonian Tropical Research Institute, Balboa, Republic of Panamá
+
+5.	Department of Anthropology, University of California, Davis, CA, United States
+
+6.	North Carolina Museum of Natural Sciences, Raleigh, NC USA
+
+7.	Department of Forestry and Environmental Resources, North Carolina State University, Raleigh, NC USA
+
+8.  Center for Tropical Environmental and Sustainability Science, James Cook University, Queensland, Australia
+
+9.	Center for the Advanced Study of Collective Behavior, University of Konstanz, Konstanz, Germany
+
+
+\par
+\end{scriptsize}
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt4, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("Segment Linearity\\DOCS\\manuscript.Rmd", envir = environment(), quiet = TRUE))
+```

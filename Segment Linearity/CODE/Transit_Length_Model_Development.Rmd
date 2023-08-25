@@ -1,0 +1,70 @@
+# Modelling Animal Transit Lengths as a Function of Inter-Point Distance
+
+Many animals appear to return to specific locations more often than would be expected by random movement through the landscape, indicating that they learn to direct their movements toward important resources. The nature of the paths the animals take between oft revisited locations likely reflect the animal's motivations and knowledge. Changes in transit patterns through time may further reveal what (and how) the animal has leanred about its environment.
+
+In order to make valid inferences about an animal's motivation and knowledge from their transits between highly revisitted locations, it is necessary to construct an appropriate model of the relationships between motivation, knowledge, and transit properties. In the following document, I outline some ideas for such a model with specific regard to the length of animal transits.
+
+## Transit Lengths with Homogenous Motivation and Knowledge
+
+In the simplest model of animal transits, we assume that neither an animal's location within its environment nor the passage of time has any effect on the animal's knowledge or motivation. We allow, then, that the *difference* between an animal's transit length and the inter-point interval will increase as three processes cause deviations from direct transit between to locations: 1) physical constraints (obstacles) in the environment, 2) errors in the animal's knowledge about the direction of its target, 3) non-directed movements resulting from other behavioral motivations. Given our assumption that deviations resulting from all three processes are equally likely to occur throughout time and space, we expect the transit length to increase linearly with increasing inter-point distance, as deviations from all three sources accumulate with increased travel.
+
+```{r}
+x = 0:10
+environment = 0.2 * x
+motivation = 0.4 * x
+knowledge = 0.3 * x
+{
+  plot(x = x, y = environment + motivation + knowledge, type = "l", lwd = 2, xlab = "Inter-Point Distance" , ylab = "Path Length - Interpoint Distance")
+  lines(x = x, y = environment + motivation, lty = "dashed", col = "darkgreen", lwd = 2)
+  lines(x = x, y = environment, col = "green", lty = "dashed", lwd = 2)
+}
+
+```
+
+## Distance Mediated Knowledge
+
+The assumption that animals are equally knowledgeable about the relative direction of a target location is unrealistic given an understanding that animals can perceive targets within a certain distance. We might also assume the animals have some memory of target positions outside of perceptual range, but the quality of animal's knowledge reduces with inter-point distance. Thus, we would conclude that knowledge has no effect on transit length up to inter-point distances of a specific (perceptual) threshold. After this threshold, we might use a ricker curve to model the interaction between the over-all rate of error in direction motion and the increased likelihood of error the further away the target is.
+
+Knowledge_Error = axe^bx
+
+With this formulation, "a" represents a baseline rate of error, and b represents the magnitude by which error rate increases with distance. When b = 0, interpoint distance does not affect error rate, and error accumulation has a linear relationship with interpoint distance. It is worth noting that for animals that do no *plan* their movements, we expect b to equal 0 (but likely with greater values of a) because the animal is not using environmental knowledge to direct its movements. For animals that do plan their movements and learn about relations in their environment, we would expect b to decrease toward 0 with increasing experience of a given transit.
+
+In this formulation, b >= 0, as we do not have any reason to suspect that increased inter-point distance would reduce error rate.
+
+
+```{r}
+x <- seq(0, 3, by = 0.1)
+a = 1
+b = 0.5
+knowledge = a * x * exp(b * x)
+{
+  plot(x = x, y = knowledge, type = "l", xlab = "Interpoint Distance", ylab = "Path Length - Interpoint Distance", lwd = 2)
+  lines(x = x, y = a * x * exp(0*x), lty = "dashed", lwd = 2)
+}
+```
+
+## Distance Mediated Motivation
+
+It is also natural to assume that animal's motivation is not independent of inter-point distance. There are a few ways this might manifest. Animals may vary in their destination-independant motivations in ways that impact the properties of resulting transits. For example, animals motivated to search locally for hidden food sources will likely have less linear movements and are more likely to encounter and visit near-by highly revisited locations. Animals motivated to move away from already depleted foraging locations may travel linearly until a highly-revisited location is encountered, a pattern that would take them further away on average. Thus, an animal's *behavioral* motivation may lead to decreasing deviations from linear transits with greater inter-point distances, even if they are not motivated by a specific *destination*
+
+If we assume the animal has *planned* its destination, we might predict that motivational error rate decreases with interpoint distance, as the absolute time and energy costs of deviations for the linear transit increases.
+
+Thus, combining these two notions, we suggest that the initial rate of motivational error may be high, as short-interpoint distances are more likely to occur when the animal is behaviorally motivated by something other than directed travel, such as local search. Then, as interpoint distance increases, the probability that it resulted from destination-directed travel increases, in which case we expect the decrease will decrease such that the absolute deviation from the linear path assymptotes, as more transits result from behaviorally directed movements.
+
+We use the Shepherd curve model this behavior. 
+
+y = a*x/(b+x^c)
+
+```{r}
+x <- seq(0, 5, 0.1)
+a = 1
+b = 1
+c = 1
+motivation <- a*x/(b+x^c)
+{
+  plot(x = x, y = motivation, type = "l", xlab = "Interpoint Distance", ylab = "Path Length - Interpoint Distance", lwd = 2)
+  lines(x = x, y = 0.5*x/(b+x^c), lty = "dashed", lwd = 2) #decreased error rate when motivation is non-direction
+  lines(x = x, y = a*x/(2+x^c), lty = "dashed", lwd = 2, col = "green") #increased probablity of directed motivation with increasing inter-point distance
+  lines(x = x, y = a*x/(b+x^2), lty = "dashed", lwd = 2, col = "purple") #decreased tolerance for error during directed travel
+}
+```

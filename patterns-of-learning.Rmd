@@ -1,0 +1,489 @@
+---
+# UCD thesis fields
+title: "Patterns of Learning in the Navigation of Selectively Foraging Mammals"
+author: "Alexander Q. Vining"
+year: "2023"
+month: "August"
+program: "Animal Behavior"
+uccampus: "DAVIS"
+report: "DISSERTATION"
+degree: "DOCTOR OF PHILOSOPHY"
+chair: "Damien Caillaud"
+signature1: "Margaret Crofoot"
+signature2: "Andrew Sih"
+abstract: |
+  Memory and learning distinguish the movement of animals from other things, resulting in trajectories that change over time, but still repeatedly return to specific locations. The frequency and predicatability with which animals return to favored locations, and the patterns of change in the paths they use to get there, offer insights into the cognitive systems of learning and memory that guide them. For animals that rely on resources that are concentrated in sparsely distributed, high value patches, these systems are particularly important for avoiding the costs of inneficient random-search foraging. In this thesis, I analyze the trajectories of such animals across multiple contexts and spatial scales, particularly the trajectories of primates and kinkajous (animals that look and behaves much like a primate, but are in fact *Carnivoran*). I find that most of these animals are quick to learn efficient paths between foraging locations, and some are able to generalize strategies for efficient navigation to novel contexts. There is some evidence that more selective foragers rely more on routine 'traplines' between multiple known locations, but are faster to deploy strategies that exploit changing resource distributions. Taken together, results of these studies suggest that diverse animal species integrate episodic-like memories into a cogntive map that helps them plan movements over large distances. Evidence that kinkajous flexibly use knowledge of detailed route-networks through complex canopy substrate to quickly find and exploit new resources, is particularly important because it highlights that the advanced development of these cogntive systems is not unique to primates and their socially complex groups, but may evolve readily in response to particular resource distributions and environmental properties.
+acknowledgments: |
+  First and foremost, I would like to thank all of the co-authors who contributed to the work in this thesis. None of this work was completed on my own, and I am incredibly grateful for the ideas, analysis, support, data, writing, and advice that other contributed toward this work. I am especially grateful to my thesis advisor, Meg Crofoot, the other members of my committee, Damien Caillaud and Andy Sih, and to the academic mentors I had along the way, including Mark Grote, Roland Kays, Seth Frey, and Jeffrey Schenk. I am immensely grateful to my peers in the Animal Behavior Graduate Group, The Crofoot Lab, The Smithsonian Tropical Research Institute, and the Max Planck Institute of Animal Behavior for the communities rich in support and exchange they fostered for me across seven years and three countries. Special thanks are warranted for Grace Davis, Shauhin Alavi, and Amelia Munson, who got me through the day-to-day, read seemingly endless drafts, and taught me more than I can measure. Calixto Rodríguez was a rock star in the field, and endured through absurd conditions with me to collect some of these data. And of course, thank you to my family for all of the support and encouragement, especially my parents to whom this is dedicated. Financial support for this work was provided by the Unversity of California, Davis Animal Behavior Graduate Group and Hemispheric Institute for the Americas, The Smithsonial Tropical Research Institute, The National Science Foundation, the Max Planck Insitute of Animal Behavior, and Richard Coss.
+dedication: |
+  "*To my parents, Jodie, Neil, and Suzanne, for opening the whole world to me. And to the all the queers who learned to navigate that world before me, and bequeathed to me something like a map.*"    
+# End of UCD thesis fields
+knit: "bookdown::render_book"
+site: bookdown::bookdown_site
+output: 
+  aggiedown::thesis_pdf: 
+    latex_engine: xelatex
+tables: true
+#  aggiedown::thesis_gitbook: default
+#  aggiedown::thesis_word: default
+#  aggiedown::thesis_epub: default
+bibliography: bib/thesis.json
+# Download your specific bibliography database file and refer to it in the line above.
+csl: csl/ecology.csl
+# Download your specific csl file and refer to it in the line above.
+link-citations: yes
+linkcolor: blue
+urlcolor: blue
+citecolor: blue
+lot: true
+lof: true
+#space_between_paragraphs: true
+# Delete the # at the beginning of the previous line if you'd like
+# to have a blank new line between each paragraph
+#header-includes:
+#- \usepackage{tikz}
+---
+
+<!--
+Above is the YAML (YAML Ain't Markup Language) header that includes a lot of metadata used to produce the document.  Be careful with spacing in this header!
+
+If you'd like to include a comment that won't be produced in your resulting file enclose it in a block like this.
+-->
+
+<!--
+If you receive a duplicate label error after knitting, make sure to delete the index.Rmd file and then knit again.
+-->
+
+```{r include_packages, include = FALSE}
+# This chunk ensures that the aggiedown package is
+# installed and loaded. This aggiedown package includes
+# the template files for the thesis.
+if(!require(devtools))
+  install.packages("devtools", repos = "http://cran.rstudio.com")
+if(!require(aggiedown))
+  devtools::install_github("ryanpeek/aggiedown")
+library(aggiedown)
+```
+
+
+<!--chapter:end:index.Rmd-->
+
+---
+#bibliography: bib/references0.json
+---
+<!-- The {.unnumbered} option here means that the introduction will be "Chapter 0." You can also use {-} for no numbers on chapters. -->
+
+# Introduction {.unnumbered}
+\chaptermark {Introduction}
+
+In her new book, "Techno-Scientific Practices", Federica @russo2022 claims that knowledge has four essential properties: it is relational, embodied, distributed, and material. This means, in brief, that knowledge is not an intangible element of individual minds, but it is the physical inscription of information across a network of actors. This knowledge allows actors in that network to ascribe meaning to the world "out there". Russo builds on this notion to develop a theory of agency in the co-production of knowledge between scientists and technology, which asks us scientists to recognize that our ability to model the world depends on the knowledge embodied in the technology we use. Technology, then, plays an active role in producing further knowledge, and holds a degree of agency in the process. Russo deems this process of co-producing knowledge "poiêsis". Esoteric as the idea may seem, it draws on a powerful combination of Philosophy of Science, Philosophy of Technology, and Philosophy of Information to challenge the idea of knowledge as belonging to "psyche", and posits that knowledge is a physical thing that can be shared among individuals - and studied. I believe this perspective is not only broadly important for scientists and their work, but specifically relevant to the way we study knowledge in animals. We can know what an animal knows when our knowledge is shared. That is - when we ascribe the same meaning to world around us.
+
+Not coincidentally, it is in large part the study of animals that brought us to this understanding of knowledge. Anthony @chemero2013 traces the tradition of embodied cognitive science, a foundation of Russo's work, to Darwin. Darwin's theory on the continuity of life challenged the predominant view in psychology that the existence of thought fundamentally held humans apart from other animals. Foundational Behaviorists that embraced Darwin's theory, such as B.F. Skinner, John Watson, and Ivan Pavlov, built theories of learning by studying the reinforcement of behavior in animals. Yet, in rejecting the "introspective" methods of other psychologists, these animal researchers left a gap between the development of behavior through reinforcement and the complex psychology of humans. Descartes' rationalist view of humans still reigned, and even as the prominent philosopher Martin Heidegger wrote extensively about the nature of "being in the world" as a continuous process of affording meaning to the state of matter around us [@heidegger1962being], he also described animals as "poor-in-world", unable to conceive of things around them as "being" [@heidegger1993letter].
+
+There was at least one psychologist, however, that found found a middle ground. Edward Tolman's "Purposive Behavior in Animals and Men" [@tolman1951purposive] describes an extensive series of experiments, mostly based on the navigation of rats through mazes, in which animals 1) latently acquired information about the world around them, 2) behaved in novel situations as though they were considering multiple courses of action, and then 3) pursued courses of action that they could only have inferred (correctly) would most effectively bring about desired outcomes, no reinforcement required. Most famously, he demonstrated that when he changed the structure of a maze, rats would spontaneously take shortcuts to out-of-sight food rewards. Through these experiments, Tolman detailed an elaborate framework of the mind, which intricately connected the behaviorists' notion of reinforcement learning to Heideggers notion of "being in the world". In his central claim, he made analogy of the mind to a map, which modeled the world outside by connecting concepts by "distance" and "direction". The key target of reinforcement, in this framework, was not stimulus-action pairs that yielded (un)desirable outcomes, but distance and direction models that accurately predicted the future. As concepts in an individual's cognitive map were arranged and built up hierarchically into knowledge of the world, he claimed, increasingly complex thoughts, "raw feels", and even consciousness would emerge naturally.
+
+Tolman's took a long time to become popular. It was not until @okeefe1976 measured the activity of individual "place neurons" in the brains of rats and claimed that these provided embodied and material evidence of Tolman's cognitive map that "cognitivism" entered the psychological mainstream. The decades of neuroscience research since have slowly built a rich and compelling picture of how distance and direction can be embodied by linking place neurons to grid neurons, and how cognitive maps can emerge as these neurons are integrated into memory traces (engrams) through reinforcement [@josselyn2020; @leutgeb2005; @weber2018]. Validating the ideas of both Tolman and Heidegger, the most fundamental feature of this system is increasingly seen not as a the mapping of space, but of time [@dragoi2011; @ekstrom2018]. In today's psychology, the cognitive map concept is tightly connected to the study of episodic memory, and the notion that behavioral flexibility emerges from the ability to map information from the past onto possible futures [@suddendorf2007].
+
+Even now, a tug-of-war exists between the rationalist approach, which identifies elements of human thought that demonstrate our unique capacity for reflection, and the embodied approach, which claims that all thought has material origins traceable through an organisms history. For example, a distinction is often made between "episodic-like" memory, evidenced by animals' ability to act according to information about when, where, and how they experienced something, and episodic memory, which includes the awareness of one's-self "being" in the memory [@clayton2017; @crystal2019]. Tulving describes the representation of self in memory as *auto-noesis*, and claims that even if animals do this too, it is not possible to get in their heads in a way by which we could know for sure [@tulving2005]. Perhaps he is right, or perhaps it possible to understand how the process by which *auto-noesis* emerges and identify the signatures of that process in animal behavior, as Tolman once did when he sought evidence that rats make inferences and visualize the future.
+
+If we are to hold the view that knowledge is relational, embodied, distributed, and material (as follows from Tolman's theory of cognitive maps) and that it is co-produced by networks of human *and* non-human actors (as put forth by Russo), then it is possible to see knowledge of the self not as an innate, ineffable aspect of human psychology, but as tangible, and perhaps inevitable, product of a cognitive organism engaging with the world around it. To study this process, however, we must step outside the world of laboratories and rats, and into the complex, poorly defined world in which the human capacity for *auto-noesis* evolved. We must ask how cognitive maps are built, from the ground-up, and put ourselves back into the equation. What is the distance and direction between the way we move through the world and the way an animal moves through world, and what can then be inferred about the knowledge we share?
+
+The rest of this thesis is not about self-awareness or consciousness. I try to limit myself to the marginally less messy concepts of knowledge, learning, and inference. But my background as a cognitive psychologist with an interest in primate theory of mind informs the whole endeavor. My mission, in starting this Ph.D. program, was to take the big questions of psychology and primate evolution to the field, and ask how cognition works when you take away the controls. What I discovered is that in the field of behavioral ecology, the concept of cognitive maps is used more like a tool than a theory (though it still often traced back to Tolman and the use of shortcuts by rats in mazes). The cognitive map, in ecology, takes the most literal form of Tolman's cognitive map: a mental topological representation of space. Though this may not accurately describe most animals' knowledge, it can be useful for approximating animal knowledge when studying their decision making. And, if the use of shortcuts is demonstrated in wild animals, its proof of a cognitive map's existence can be rightfully hailed as a milestone for the study of animal cognition. In each chapter of this thesis, I make an attempt to integrate the ecological concept of cognitive maps (which I henceforth call topological maps) and the pyschological concept of cognitive maps. 
+
+What I mean by this is, I make an effort in each chapter to measure the ways different animal's movement reflects an inference at a specific spatial scale, and what the nature of this inference says about the animals' knowledge. In the first chapter, I explore multi-destination route-optimization by primates in local resources arrays. I ask how their movement provides evidence that they have learned either the specific patterns that optimize a given array, or general strategies that yield efficient routes in many arrays. In the second chapter, I bring this controlled, lab test to the messy field, exploring how kinkajous forage for flowers in the analagous but much more complicated crown of a balsa tree. Then I expand the scale, asking how kinkajous learn routes and navigate between feeding stations I experimentally baited with food over nearly two months. Finally, I expand the scope, analyzing the movements of four different species for signs of spatial inference as they forage for a particularly essential and dynamic food resource over a two three-month seasons. In the process, I have repeatedly broken down and rebuilt my own understanding of the nature of cognition. I hope, by the end, the reader might share in some facet of that knowledge.
+
+<!--chapter:end:00-intro.Rmd-->
+
+---
+#bibliography: bib/references1.json
+---
+# Mild movement sequence repetition in five primate species and evidence for a taxonomic divide in cognitive mechanisms.
+<!-- This adds a different "short title" -->
+\chaptermark {Sequence Repitition}
+Authors: Alexander Q. Vining^1,2,3,4,\dag^, L. Tamara Kumpan^5,6,\dag^, Megan M. Joyce^7^, William D. Aguado^8^, Eve A. Smeltzer^5^, Sarah E. Turner^7^ & Julie A. Teichroeb^5^ \par
+
+\begin{scriptsize}
+1.	Animal Behavior Graduate Group, University of California, Davis, USA
+
+2.	Department for the Ecology of Animal Societies, Max Planck Institute of Animal Behavior, Konstanz, Germany
+
+3.	Department of Biology, University of Konstanz, Konstanz, Germany
+
+4.	Smithsonian Tropical Research Institute, Balboa, Republic of Panamá
+
+5.	Department ofAnthropology, University of Toronto Scarborough, Toronto, ON M1C 1A4, Canada. 
+
+6. School of the Environment, University of Toronto, Toronto, Canada. 
+
+7. Geography, Planning and Environment, Concordia University, Montréal, Canada. 
+
+8. Department of Anthropology, Rutgers University, New Brunswick, USA. 
+
+\dag These authors contributed equally: L. Tamara
+Kumpan and Alexander Q. Vining.
+\par
+\end{scriptsize}
+
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt1, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("Do Primates Trapline\\DOCS\\Movement Sequence Repitition.Rmd", envir = environment(), quiet = TRUE))
+```
+
+
+
+
+
+<!--chapter:end:01-chap1.Rmd-->
+
+---
+#bibliography: bib/references2.json
+---
+
+# The Movement and Behavior of Kinkajous in a Dynamic Foraging Hotspot {#math-sci}
+
+<!-- This adds a different "short title" -->
+\chaptermark {Movement in Hotspot}
+
+Authors: Alexander Q. Vining^1,2,3,4^, Chase L. Núñez^2,3^, Nele Stockmeyer^3^, Margaret C. Crofoot^2,3,4,5,6^ \par
+
+\begin{scriptsize}
+1.	Animal Behavior Graduate Group, University of California, Davis, USA
+
+2.	Department for the Ecology of Animal Societies, Max Planck Institute of Animal Behavior, Konstanz, Germany
+
+3.	Department of Biology, University of Konstanz, Konstanz, Germany
+
+4.	Smithsonian Tropical Research Institute, Balboa, Republic of Panamá
+
+5.	Center for the Advanced Study of Collective Behavior, University of Konstanz, Konstanz, Germany
+
+6.	Department of Anthropology, University of California, Davis, CA, United States
+\par
+\end{scriptsize}
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt2, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("Balsa_Spatial_Analysis/DOCS/The-movement-and-behavior-of-kinkajous-within-a-dynamic-foraging-hotspot.Rmd", envir = environment(), quiet = TRUE))
+```
+
+<!--chapter:end:02-chap2.Rmd-->
+
+---
+#bibliography: bib/references3.json
+---
+# Comparing the navigation of mammals on BCI reveals ecological drivers of cognitive evolution
+
+<!-- This adds a different "short title" -->
+\chaptermark {Navigation and Cognition}
+
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt3, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("BCI Anniversary\\DOCS\\navigation on BCI markdown.Rmd", envir = environment(), quiet = TRUE))
+```
+
+<!--chapter:end:03-chap3.Rmd-->
+
+---
+#bibliography: bib/references4.json
+---
+
+# Evidence of diet-mediated learning rates in the route-formation of four sympatric mammal species {#route-learn}
+
+<!-- This adds a different "short title" -->
+\chaptermark {Route Formation}
+
+Authors: Alexander Q. Vining^1,2,3,4^, Damien Caillaud^4,5^, Mark Grote^5^, Shauhin Alavi^2,3^, Roland Kays^4,6,7^, Ben Hirsch^4,5,8^, Margaret C. Crofoot^2,3,4,5,9^ \par
+
+\begin{scriptsize}
+1.	Animal Behavior Graduate Group, University of California, Davis, USA
+
+2.	Department for the Ecology of Animal Societies, Max Planck Institute of Animal Behavior, Konstanz, Germany
+
+3.	Department of Biology, University of Konstanz, Konstanz, Germany
+
+4.	Smithsonian Tropical Research Institute, Balboa, Republic of Panamá
+
+5.	Department of Anthropology, University of California, Davis, CA, United States
+
+6.	North Carolina Museum of Natural Sciences, Raleigh, NC USA
+
+7.	Department of Forestry and Environmental Resources, North Carolina State University, Raleigh, NC USA
+
+8.  Center for Tropical Environmental and Sustainability Science, James Cook University, Queensland, Australia
+
+9.	Center for the Advanced Study of Collective Behavior, University of Konstanz, Konstanz, Germany
+
+
+\par
+\end{scriptsize}
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt4, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("Segment Linearity\\DOCS\\manuscript.Rmd", envir = environment(), quiet = TRUE))
+```
+
+<!--chapter:end:04-chap4.Rmd-->
+
+---
+#bibliography: bib/references_conclusion.json
+---
+# Conclusion {-}
+
+I began my graduate research program with the intention to study how a cognitive system evolves such that it is capable of understanding complex societies and building sophisticated technologies, as seen in human behavior. My foundational hypothesis was that the foraging behavior of primates and other species that share their ecology would reveal the basic features of such cognitive systems. The most useful idea I found in the pursuit of this goal is that of the cognitive map. In this conclusion, I will outline the contours of how I understand cognitive maps now, which differs considerably from how I understood cognitive maps when I designed each of my chapters, and which itself differs from how I understood cognitive maps as I wrote the chapters. Once my personal theory of cognitive maps is briefly laid out, I will highlight some of the ways my research helped my views to evolve and discuss some ways I believe that this theory could shape the future of ecological research. Finally, I will consider some of the emerging bridges between the research fields of artificial intelligence and animal cognition that I think have the most potential, especially those that might ead to mathematical models necessary for formally testing conceptual theories of cognitive maps.
+
+## Building a Cognitive Map
+
+The concept of the cognitive map is, at its core, an analogy. In the conclusion to *Purposive Behavior in Animals and Men", Tolman writes
+
+>
+>"All science necessarily presents, it seems to us, but a map and picture of reality. If I were to present reality in its whole concreteness, science would be not a map, but a complete replica of reality. And then it would lose its usefulness. For it would have to cover as many pages as does life itself; it would no longer serve as a brief and a handbook. One of the first requisites of a science is, in short, that it be a map, i.e. A short-hand for finding one’s way about from moment of reality to the next—that it be a symbolic compendium by means of which to predict and control.
+Our account of the mind, we hold, is a map account."
+>
+
+The central question Tolman attempts to answer in his book is "how do animals make this map?" The framework he presents is rigorous and insightful, but also sprawling, complex, and somewhat archaic - no doubt a reason that its influence in psychology was slow to emerge and often misunderstood. Here, I draw on this framework, as well as more modern accountings and my own insights, to present a simpler outline of the cognitive map's primary mechanics (as I understand it).
+
+The simplest definition of a cognitive map I can offer is "a hierarchical representation of the state of the world, built from memory by the combined processes of inference and reinforcement." At the lowest level, inference occurs when an animal determines that one perceptual scene is "like" another. It can then use the outcomes of its behavior in that previous scenario to guide its decisions in the current moment. If the outcomes of the two scenarios are congruous, the shared elements of the scenarios can be stored in a *scheme*. Schema reduce the information in a perceptual scene to a subset of important features, and they are the building blocks of a cognitive map. Learning occurs when an outcome causes the connections between the schema and motor pathways activated prior to that event to become reinforced. In this way, animals learn not only how to respond to specific perceptual cues, but also how to make inferences across increasingly disparate and diverse scenarios by attending to their most important features. The network of associations between schema that an animal builds over time - its semantic knowledge - allows the animal to translate a given perceptual scene into a representation of possible actions and their outcomes - a cognitive map.
+
+My hope, in presenting this highly simplified explanation of a cognitive map, is to highlight how reinforcement and inference are highly integrated processes that build on each other to produce intelligent behavior. This view contrasts with the one I held entering this dissertation that reinforcement and inference form a dichotomy. On one side of such a dichotomy, reinforcement produces stable patterns of action that can only be changed by repeated, countervailing experience. On the other side, inference is a separate cognitive faculty that enables some animals to behave optimally without the need for reinforcement. The research I have presented offers several opportunities to consider why the idea of a cognitive map depicts nuance in the relationship between reinforcement and inference that is necessary for studying the behavior of intelligent animals in complex environments.
+
+Take the differing responses of primates placed into small foraging arrays in Chapter 1, for example. The vervets and Japanese macaques needed no experience to adopt efficient movements between resource platforms. Despite the novelty of the platforms and their arrangement, these primates inferred an efficient way to acquire all of the food. The strepsirrhines did not. Instead, the strepsirrhines spent many of their initial trials exploring. Only with repeated exposure did strepsirrhines begin showing behaviors that indicated they had inferred, from previous trials, properties of they array: they focused more on the platforms, avoided returning to the same platforms, and in a few cases began to consistently follow efficient routes between all platforms. Because this project lacked an experimental component and there were confounding differences in the nature of the strepsirrhine environments and those with vervets and Japanese macaques, it is impossible to say what drives the observed differences. That the strepsirrhines evevntually prove themselves capable of navigating the arrays as efficiently as vervets and Japanese macaques, however, emphasizes the question of why they do not do it in the first place. Perhaps their different sensory organs perceive the scene differently and the food is less salient to them; perhaps they have less prior experience with arrays of depleting resources than the vervets and macaques. Or, perhaps the reinforcement of schema in their cognitive maps is more modular, and less likely to bridge between disparate contexts, even if they share some salient features. Future work could resolve these alternative hypothesis by sequentiall introducing individuals of each species to arrays of different scales (eg one-half or twice the sizes used in Chapter 1), and in different contexts (eg. light vs dark, different colored rooms). The differently sized arrays would enable measurement of how learning rates change with the scale of the array, which makes for more robust comparisons between species. Introducing the same individual to arrays in different contexts would allow some control over experience, allowing to measure how individuals generalize their experiences, instead of just guessing.
+
+In Chapter 2, kinkajous face the opposite problem: a familiar environment where the resource array changes. In this case, kinkajous may still benefit from learning movement patterns through the tree crown that optimize foraging success on average (direct reinforcement of cues such as crown structure to motor action). In addition, kinkajous might hypothetically learn strategies that help them efficiently exploit the specific array of flowers on a given night (reinforcing the use of particular schema, e.g. the appearance of flowers on one branch that commonly blooms synchronously with a branch in another region). However, at the scale of our analysis we found neither patterns that could be exploited as such, nor much variation in flower distribution at all. Such absence was reflected in the apparent randomness of kinkajous' movements within the crown.
+
+Analyzing the results of the first two chapters from the perspective of reinforcement and inference illustrates how animals, if they are to exploit the patterns of an ever-changing world, must move beyond simple stimulus-action reinforcement. They need to use schema to make inferences - learning occurs as they reinforce the use of schema that enable better inferences. This type of learning usefully describes the process of developing semantic knowledge from episodic memory. A sense of the cognitive map begins to emerge when considering how an animal combines its knowledge of multiple schema to conceptualize its current context and the actions that would be most useful. The nature and value of the cognitive map becomes clearer when considering it in an explicitly spatial context, as done in Chapters 3 and 4.
+
+The results of Chapter 3 illustrate how kinkajous use both reinforcement and inference to behave efficiently and flexibly throughout space. In some places, the high resolution tracking of Tony Stark reveals incredibly consistent paths through the canopy, indicating the power of reinforcement to develop efficient behavior in a complex environment. Yet, these paths are used in two directions. This could not be achieved by simply reinforcing stimulus-action responses, as the stimuli moving the opposing directions are likely very different. Instead, an animal learning to use a route bi-directionally might reinforce schema along the route that includes schema of where the animal has been. A couple interesting factors become apparent here. First, the hierarchical nature of a cognitive map; while lower order schema might store the salient features of a simple concept, like a certain type of object, higher order schema organize lower order schema into increasingly complex concepts, such as a place. Second, the use of bi-directional routes demonstrates the role of cognitive maps in allowing an animal to represent the state of the world outside of its current perceptual context by building associations. As Tony Stark learns to use a route in one direction, if the schema he builds are associated with schema of where he has been, he will be better able to infer the utility of using the route in the other direction. 
+
+This same idea applies to the intersections in a kinkajou's route network, but with added complexity. These points in space are not just used for two navigational goals, but three or more. In the food provisioning experiment with Molly, she rapidly integrated provisioning locations into her nightly movements and developed more direct routes between these locations. Though route intersections could emerge if different behaviors are reinforced according to different motivations (e.g. food vs. water), this is not sufficient to explain Molly's behavior. Instead, Molly's behavior suggests she has previously reinforced associations between movement decisions at important intersections and particular place schema. If her scheme for a place changes, say because she has recently found food there, it can influence her decision at an intersection previously associated with the place, but not the food. I have taken some liberty in describing the results of this chapter, as the limited data do not rule out many alternative hypotheses, but what I hope to have illustrated is that the flexible navigation of kinkajous can not be explained by magnitudes of reinforcement learning and/or inference alone; it requires a theory of how reinforcement and inference create a feedback loop that can build an increasingly complex system of knowledge like a cognitive map.
+
+If the behavior of the kinkajous tracked in Chapter 3 point toward an integrated role of reinforcement and inference in the development of a cognitive map, Chapter 4 provides evidence of this process in action. The analysis takes the assumption that animals know of a relationship between two locations, but the connections may be indirect or through weakly reinforced schema. If a change occurs in the animal's cognitive map, e.g. the appearance of new food at one of these two locations, and that change motivates the need for a more direct route, the animal may follow the known connections, but use learned strategies for orientation to build more direct and reinforced schema along the way. Examples of this could include learning new landmarks on the physical path that aid in orientation, or cutting landmarks out of the route by finding a direct connections between the landmarks that come before and after. As an animal's route shifts through space, it will need to infer the utility of new places it visits, then reinforce those schema that are most useful. By measuring the rate at which animals build direct routes between locations separated by varying distances, we are able to assess how they balance reinforcement of paths that work with learned strategies for inferring new choices that may produce better results.
+
+In summary, each chapter of this dissertation finds animals attempting to navigate ever-changing worlds, but the factors that change differ from chapter to chapter. In each case, the changing features render simple stimulus-action reinforcement ineffective for producing optimal behavior. Instead, optimal behaviors could be produced by reinforcing the use and associations of schema that mediate between perception and action, allowing for inference. In the first two chapters, these inferences involve strategies for serial decision-making in local, multi-destination arrays. In chapters 3 and 4, the problem expands to environments that are only partially observable, and thus call for a more complex cognitive map that, through hierarchical organization, can build concepts of places and their spatial properties. Across all chapters, the data reveal variance between individuals and species in how quickly they learn optimal behaviors, and the breadth of contexts between which they can make inferences.
+
+One piece that is largely missing from these studies is the development of cognitive maps over an individual's lifetime, or across different experimental contexts. The methods of analysis developed in this work opens the door to rigorously conduct such research. These efforts would be greatly supplemented by the formalization of a cognitive map model, as is happening in the field of artificial intelligence, enabling the simulation of learning (and emergent behaviors) across parameter values that balance inference and reinforcement. Taken together, these efforts could integrate theories of learning with ecological theories such as optimal foraging and the ecological constraints model. In the following sections, I outline further details about the directions this research could take.
+
+## Modelling a Cognitive Map
+
+Inference is of primary interest to AI scientists, and is generally studied within the field under the moniker "first-trial learning". First-trial learning refers to the ability of an agent to behave more optimally upon its first exposure to a new environment if it has previously had experience in a different environment with some shared properties (relative to agents that have no previous experience). 
+
+One of the algorithms most proficient in first-trial learning is called Projective Simulation (PS; @briegel2012), which draws explicitly on the ideas of episodic memory, schematization, and reinforcement outlined in the previous section. In the infinite color game, for example, a PS agent is presented with a simple perceptual scene (percept) that contains two elements, an arrow with one of a discrete set of $n$ directions and a random color drawn from the continuous color space. The actions the agent can take correspond to the directions of the arrows, and the goal is for agents to learn to chose the action that matches the arrow direction in a percept. The first step for the algorithm to achieve this is to create a network of encountered percepts (episodic memory), 'wildcard generalizations' (nodes in the graph that replace at least one element of percept vector with a '#' symbol, i.e. schema), and actions. Second, when an agent encounters a new percept (which occurs at every step because every color is unique), it creates edges between that percept's node in the memory network and any wildcard nodes to which it can be generalized. It then conducts a random walk through the network, starting at the current percept node and ending when it arrives at an action. Finally, when the agent successfully matches an action to the observed arrow direction, the weight of all the network edges it traversed prior to that decision are reinforced, increasing their likelihood of being followed again in the future [@melnikov2017]. Over time, the links between wildcard schema that contain only arrow direction information become strongly linked to the correct actions, and this architecture thus provides a computationally simple means for the agent to derive the relevant properties of a scene, even when no two scenes are ever the same.
+
+Though it is unsurprising to see that principles of psychology, developed in large part through the study of animal behavior, have been influential in the field of Artificial Intelligence (AI), the insights of AI research have been slower to make their way back to behavioral ecology. The most obvious reason for this is that applying these insights to the behavior of real animals in complex environments is among the most difficult class of AI problems. @russell2020 identify seven binaries that categorize the difficulty of an environment in terms of its difficutly for AI to solve, noting that "the hardest case is *partially observable, multiagent, nondeterministic, sequential, dynamic, continuous, and unknown.* Without going into detail about each of these qualities, I will suffice it to say they clearly describe the conditions of Chapters 3 and 4 (and also the first two chapters, if one considers the role of the external environment in the animals' behavior - e.g. how changing abundance of other food sources affected the time kinkajous spent in the balsa tree studied in Chapter 2). The types of algorithms that can handle these types of environments are new, and require specialized study to implement (@russell2020's 1200 page volume is an *introductory* text to the study of these algorithms). The Projective Simulation algorithm in the infinite color game addresses only the 'continuous' problem of challenging environments. Nonetheless, emerging AI algorithms have enormous potential for informing the development of new models relating individual learning to the emergence of group- and population-level phenomena in behavioral ecology.
+
+I believe that the cognitive map concept will be essential for filling this gap. Consider a hypothetical version of Projective Simulation that includes a 'working memory' element of each percept. This working memory might contain a vector for each possible action the agent can take (memory vector), with a magnitude equal to the number of times that action was taken since some event (e.g. a successful foraging action). Like the colors in the infinite color game, the possible vectors that could be held in this element are infinite, but need only be added to the memory network as they are experienced, with links to the wildcard nodes that generalize the vectors away. Such functionality would enable agents to learn about the 'distance' and 'direction' between experiences and schema, the key features of a cognitive map. If the structure of nodes representing memory vectors is further constrained such that the connection between a node in vector $x$ of magnitude $i$ and a node in vector $y$ of magnitude $j$ is equal to $r_{xy} \lvert i-j \rvert$, where the value of $r_{xy}$ that minimizes an agent's surprise can be learned, I believe agents in a spatial foraging task would begin to use novel shortcuts. The true power of such an approach, however, is that it need not be applied only to spatial domains; it would allows an agent to learn generally about how its actions change its environment and the relationships between different actions and their consequences.
+
+## The role of Cognitive Map models in Optimal Foraging
+
+The notion of an intelligent agent that can solve foraging tasks in the most challenging environmental cases begs the question of how such agents will behave relative to real animals. For example, the Marginal Value Theorem predicts that animals will stop foraging in a patch when the rate of return in that patch falls below the average rate of return in the environment, including the time costs of travel [@charnov1976]. This theorem assumes that an animal has perfect knowledge of the average return rate and distance of foraging patches in its environment, but no knowledge of the locations or values of specific patches. Perfect knowledge of the average environment seems unlikely for animals, and Chapter 4 adds to a large body of evidence that animals have some knowledge of future destinations. None-the-less, early research using relatively simple systems found that foraging behavior matched the predictions of the Marginal Value Theorem in species as diverse as black-capped chickadees [@krebs1974], great tits [@cowie1977], hummingbirds [@pyke1978a], chipmunks [@giraldeau1982], and bumblebees [@cibula1984; @pyke1978]. However, subsequent work found that animals generally overstay in patches [@nonacs2001], but sometimes leave energy rich patches too early [@alonso1995]. The ability of animals to match Marginal Value Theorem predictions can be explained by learning models that closely approximate the solution using limited memory [@belisle1997], while deviations from these predictions have been attributed to animals learning to leave a patch based on multi-scale foraging contexts (e.g. they leave a quality patch sooner if they know it to be in a high quality region) [@watanabe2014]. Deviations for optimal foraging may also result from animals learning to satisfice multiple competing demands, rather than maximize energy intake [@alonso1995]. A formal cognitive map model of learning could explain such higher order learning, and lead to the derivation of new marginal value predictions based on the multi-scale foraging challenges faced by most animals in real environments.
+
+I will conclude by (1) re-iterating the distinction posed in my introduction between cognitive map models of *knowledge* often used in movement ecology and cognitive map models of *learning* used in psychology, (2) emphasizing the reasons my research motivates a need to integrate cognitive map models of learning into ecological research, and (3) briefly speculating on the power of cognitive map models of learning to extend beyond foraging behavior and into higher level processes like social learning and theory of mind. 
+
+(1) In ecological research, cognitive models generally have a spatially explicit structure; they are useful for assessing how animals make decisions under the assumption they already know relevant features of the environment are location. In psychology, cognitive map models the the way a network of ideas is constructed to hold information about the distance and direction seperating these ideas. These models are useful for understanding how an animal can develop spatially explicit knowledge in the first place, and have the added benefit of being useful for explaining learning in non-spatial domains. 
+
+(2) In my dissertation, I have illustrated how movement decisions and patterns of navigation differ in contexts with small and large spatial scales. Yet, I also observe there is a link between the ways animals learn the strategies effective for each context. Cognitive map models of learning can unify accounts of how animals learn heuristics for navigating arrays within local, perceptually available scenes, and how animals learn routes that traverse the continuous space between distant patches. They provide a means of explaining (and predicting) the inferences animals make (e.g. the relevant context of a novel scene, or a shortcut between patches) that are typically baked into cognitive map models of knowledge. 
+
+(3) Finally, cognitive map models of learning should, in theory, allow for learning beyond spatial domains, such as social domains - so long as the agent or animal can perceive the other relevant actors and learn how sequences of its own actions intervene between one state of the world and the next. If true, these models could be integrated into our understanding of how animals respond to each other in their movements, offering insights into how animals achieve an ideal free distribution [@krivan2008] or modulate group size according to ecological constraints [@chapman1990].
+
+To achieve these ends, behavioral ecologists and computer scientists will need to bring their domains of knowledge together. Many behavioral ecologists conducting research like my own are building substantial knowledge of what inferences animals make, and when. Computer scientists are increasingly able to explain how intelligent systems learn to make sophisticated inferences by integrating episodic memory and reinforcement learning into hierarchical networks of knowledge. These systems relate perceived world-states according distances and directions along an agent's action space, much like Tolman described cognitive maps. Somewhere between the leading edges of these two fields, there is a predictive model of animal foraging in stochastic, multi-scale environments that does not need to assume animals possess *a-priori* representations of topological space. The route through this space just needs to be mapped.
+
+<!--chapter:end:05-conclusion.Rmd-->
+
+`r if(knitr:::is_latex_output()) '\\appendix'`
+
+`r if(!knitr:::is_latex_output()) '# (APPENDIX) Appendix {-}'` 
+
+<!--
+If you feel it necessary to include an appendix, it goes here.
+-->
+
+
+# Appendix
+
+This dissertation is supported by several hundred pages of supplementary code, analysis, and figures. These documents, along with a completely reproducible workflow, can be found in an online repository at github.com/aqvining/Thesis-patterns_of_learning. Here, we offer a guide to important supplements (included those cited in the preceding chapters) and where to find them within the main repository.
+
+## Chapter 1
+
+1.1 - Chapter 1 Markdown
+ 
+Location: "Do Primates Trapline/DOCS/Movement Sequence Repetition.Rmd"
+
+Description: The document used to compile Chapter 1. Primarily text and figure embedding. The bulk of analysis for Chapter 1 was competed in other documents (see below).
+ 
+1.2 - Chapter 1 Data Notebook
+ 
+Location: "Do Primates Trapline/CODE/Data_Notebook.pdf"
+
+Description: A reproducible report on all analyses included in chapter 1. Includes 1) pointers to the code used to clean and prepare data used for the chapter, 2) Detailed written and visual assessment of model validity for the learning rate models used in chapter 1, 3) Code to reproduce all Chapter 1 figures, and 4) detailed analysis of model posterior distributions. The markdown version of this PDF is also available using the .rmd extension.
+ 
+1.3 - Chapter 1 Simulation Validation
+ 
+Location: "Do Primates Trapline/CODE/Simulation-Validation.html"
+
+Description: Simulations in Chapter 1 were based on the descriptions of a model from another paper (Reynolds et al, 2013), with modifications. In this report, I reproduce the results of the Reynolds paper, validating that differences in our model were the result of our intentional changes and not due to errors or differences in code. I also note how the Reynolds model performs in the novel arrays used in Chapter 1, discussing the importance of our model modifications for these more complex environments. The markdown version is also available using the .rmd extension. 
+ 
+1.4 - Initial analysis of DET metric
+ 
+Location: "Do Primates Trapline/CODE/Primate DET Report.html"
+
+Description: This report details how the properties of the DET metric were explored and understood, leading the selection of analysis parameters used and described in Chapter 1. It includes several insights into the use of the DET metric for studying primate behavior not included in the main body due to their complexity and tangential relevance. Some caution should be used, however, as the models used for analysis in this report are not as comprehensive as those in the final analysis, and the document has not been updated or modified from its original form.
+ 
+1.5 - Final Analysis of primate sequence DET
+ 
+Location: "Do Primates Trapline/CODE/DET_Analysis.html"
+
+Desription: A companion to the Data Notebook, this documents provides a complete and reproducible description of the models used to analyze the DET of primate movement sequences through experimental arrays. This includes code, model diagnostics, detailed descriptions of posterior distributions, and written analysis. 
+ 
+## Chapter 2
+
+2.1 Chapter 2 Markdown
+
+Location: "Balsa_Spatial_Analysis/DOCS/The-movement-and-behavior-of-kinkajous-within-a-dynamic-foraging-hotspot.Rmd"
+
+Description: The analysis and writing of this chapter were integrated. Thus, this document contains all of the code necessary to produce Chapter 2, including the text markdown, analysis, statistical reports, and figures.  This also include figures and statistics for model diagnostics and in-depth analysis that are hidden in the final PDF version.
+
+2.2 Chapter 2 Reference Simulations
+
+Location: "Balsa_Spatial_Analysis/CODE/Reference_Model1_Analysis.html"
+
+Description: A detailed description of the simulations used to create reference data, and the code used. The markdown version is also available using the .Rmd extension
+
+2.3 Initial Analysis Short Report
+
+Location: "Balsa_Spatial_Analysis/CODE/Kinkajou_Scan_Analysis.html
+
+Description: An initial report on the raw data data used in chapter 2 along-side an early analytical model. Includes many figures included in the main markdown code, but hidden and not described in the output of that document. This version is thus easier to access and read for anybody interested in a more detailed breakdown of the data.
+
+## Chapter 3
+
+3.1 Chapter 3 Markdown
+
+Location: "BCI Anniversary/DOCS/Navigation on BCI markdown.Rmd"
+
+Description: Markdown of text and figure embedding for Chapter 3. Analysis for this chapter was not integrated into the markdown body, and can be found in supplementary documents (see below).
+
+3.2 Chapter 3 Data Preparation
+
+Location: "BCI Anniversary/CODE/Path_Segmentation.html"
+
+Description: Detailed descriptions, figures, and code for processing raw data for chapter 3. Also available in markdown using .Rmd extension
+
+3.3 Chapter 3 Reproducible Analysis
+
+Location: "BCI Anniversary/DOCS/Data-Notebook.html"
+
+Description: A more thorough analysis of the models and statistics presented in Chapter 3, including model diagnostics and code used to analyze the data and create figures. The markdown version is available in the CODE folder using the .RMD extension.
+
+## Chapter 4
+
+4.1 Chapter 4 Markdown
+
+Location: "Segment Linearity/DOCS/manuscript.Rmd"
+
+Description: Integrated markdown of Chapter 4 text, code, and analysis, sufficient to reproduce the full chapter. Many of the more detailed figures are hidden in the final output.
+
+4.2 Chapter 4 Data preparation
+
+Location: Segment Linearity/CODE/Path-Clustering-and-Segmentation.Rmd
+
+Description: Code and figures used to process raw data, with descriptions and explanations of parameter settings used for each step in the data processing pipeline. 
+
+4.3 Chapter 4 Model Development
+
+Location: Segment Linarity/CODE/Gamma-Generalized-Ricker-Model-Development
+
+Description: The final model presented in Chapter 4 is complex. It was developed iteratively, testing each new parameter and its prior distributions to determine its effect on the models health and the properties of the model when fit to the data. Each model tested in contained in this document, as well as brief written descritption of what was learned at each stage.
+
+
+<!--chapter:end:06-appendix.Rmd-->
+
+# Colophon {-}
+
+This document is set in [EB Garamond](https://github.com/georgd/EB-Garamond), [Source Code Pro](https://github.com/adobe-fonts/source-code-pro/) and [Lato](http://www.latofonts.com/lato-free-fonts/). The body text is set at 11pt with $\familydefault$. 
+
+It was written in R Markdown and $\LaTeX$, and rendered into PDF using [aggiedown](https://github.com/ryanpeek/aggiedown) and [bookdown](https://github.com/rstudio/bookdown). 
+
+This document was typeset using the XeTeX typesetting system, and the University of California Thesis class. Under the hood, the elements of the document formatting source code have been taken from the [Latex, Knitr, and RMarkdown templates for UC Berkeley's graduate thesis](https://github.com/stevenpollack/ucbthesis), and [Dissertate: a LaTeX dissertation template to support the production and typesetting of a PhD dissertation at Harvard, Princeton, and NYU](https://github.com/suchow/Dissertate)
+
+The source files for this thesis, along with all the data files, have been organised into a git repisitory, which is available at https://github.com/aqvining/thesis-Patterns_of_Learning. A hard copy of the thesis can be found in the University of California, Davis library.
+
+This version of the thesis was generated on `r Sys.time()`. The repository is currently at this commit:
+
+```{r echo = FALSE, eval = FALSE}
+# I've set eval=FALSE to ensure Travis-CI can run
+# if you're not using Travis-CI, then eval=TRUE will be fine
+# library(git2r)
+# if ( git2r::in_repository() ) {
+#        summary(commits()[[1]]) 
+# } else { 
+#        message("We are not in a git repository") 
+# }
+```
+
+The computational environment that was used to generate this version is as follows:
+
+```{r echo = FALSE}
+devtools::session_info()
+```
+
+
+<!--chapter:end:98-colophon.Rmd-->
+
+<!--
+The bib chunk below must go last in this document according to how R Markdown renders.  More info is at http://rmarkdown.rstudio.com/authoring_bibliographies_and_citations.html
+-->
+
+\backmatter
+
+<!-- 
+If you'd like to change the name of the bibliography to something else,
+delete "References" and replace it.
+-->
+
+# References {-}
+<!--
+This manually sets the header for this unnumbered chapter.
+-->
+\markboth{References}{References}
+<!--
+To remove the indentation of the first entry.
+-->
+\noindent
+
+<!--
+To create a hanging indent and spacing between entries.  These three lines may need to be removed for styles that don't require the hanging indent.
+-->
+
+\setlength{\parindent}{-0.20in}
+\setlength{\leftskip}{0.20in}
+\setlength{\parskip}{8pt}
+
+
+
+<!--chapter:end:99-references.Rmd-->
+

@@ -1,0 +1,5 @@
+# Daily Log May 31 2021
+#lab-notebook/daily-log
+#thermal-video
+
+Tested batch operations for thermal image processing in thermal studio pro demo, see note from today. I think this is definitely the way to go.

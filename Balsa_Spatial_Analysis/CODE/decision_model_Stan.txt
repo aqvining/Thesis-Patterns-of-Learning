@@ -1,0 +1,23 @@
+data{
+    int Success[70];
+    vector[70] adj_flowers_diff;
+    int From_To[70];
+}
+parameters{
+    real ap;
+    vector[6] ap_From_To;
+    real bp_flowers;
+    real<lower=0> ap_sigma_choice;
+}
+model{
+    vector[70] p;
+    ap_sigma_choice ~ exponential( 1 );
+    bp_flowers ~ normal( 0 , 2 );
+    ap_From_To ~ normal( 0 , ap_sigma_choice );
+    ap ~ normal( 0 , 2 );
+    for ( i in 1:70 ) {
+        p[i] = ap + ap_From_To[From_To[i]] + bp_flowers * adj_flowers_diff[i];
+        p[i] = inv_logit(p[i]);
+    }
+    Success ~ binomial( 1 , p );
+}

@@ -1,0 +1,862 @@
+---
+title: "FFT Path Segment Analysis"
+author: "Alexander Vining"
+date: "2022-10-25"
+output: html_document
+---
+
+#Overview
+
+The purpose of this analysis is to understand how four different mammal species on Barro Colorado Island, Panama, move within and between locations that are visited repeatedly. This analysis follows the following steps 
+1) Load and clean data on a) the movements (GPS tracks) of animals on the island b) spatial data on the tree crown boundaries of dipteryx oliefera, and important food source for all four species during the time of tracking, and c) spatial data on the boundaries of the island., 
+2) Identify, for each individual animal, spatial boundaries of locations which are visited often and/or used extensively 
+3) Break all GPS tracks into "visitation" and "transit" segments
+4) Analyze the movement properties of transit and visitation segments
+
+More information on each of these steps is provided in the relevant sections
+
+#Data Preparation
+
+```{r setup}
+library(dplyr)
+library(sf)
+library(lwgeom)
+library(sp)
+library(recurse)
+library(dbscan)
+library(ggplot2)
+library(RColorBrewer)
+library(move)
+library(lubridate)
+```
+
+We start by loading the raw data for a) Animal Telemetry b) Dipteryx locations, and c) the island outline. This takes a minute or two.
+
+```{r data_loading, message = FALSE}
+##Movement Data
+all_data_FFT <- read.csv("C:\\Users\\avining\\Documents\\FFT data\\FFT.csv") %>%
+  mutate(timestamp = as.POSIXct(timestamp))
+
+#generate a key for each individual's species
+all_data_FFT[match(unique(all_data_FFT$individual.local.identifier), all_data_FFT$individual.local.identifier),] %>% 
+  dplyr::select(individual.local.identifier, individual.taxon.canonical.name) %>% 
+  mutate(across(everything(), gsub, pattern = " ", replacement = ".")) %>% 
+  write.csv("../DATA/processed/species-key.csv", row.names = FALSE)
+
+all_data_FFT <- all_data_FFT[,-1]
+
+move_data_FFT <- move(all_data_FFT)
+move_data_FFT <- spTransform(move_data_FFT, "+ proj=utm + zone=17 + ellps=WGS84")
+attr(move_data_FFT@coords, "dimnames")[[2]] <- c("X","Y")
+
+#change raw data to UTM (telemetry object expects lat lon, but other files will use UTM later)
+
+
+#BCI Outline
+BCI <- readOGR(dsn="C:/Users/avining/Documents/FFT data", layer = "BCI_outline") #load BCI shape file
+BCI_latlon <- spTransform(BCI, "+proj=longlat +datum=WGS84 +no_defs +type=crs")
+BCI.df <- fortify(BCI) # format BCI shape file for ggplot
+
+
+#dipteryx crowns
+dipteryx <- readOGR(dsn="C:/Users/avining/Documents/FFT data", layer = "BCI_Dipteryx_Patches") #loads from 5 files: .dbf, .prj, .qpj, .shp, .shx
+#summary(dipteryx)
+#plot(dipteryx)
+
+
+#####Create a dataframe from dypterix shape files for use in ggplot
+dipteryx@data$id <- as.character(dipteryx@data$PatchID)
+dipteryx.points <- fortify(dipteryx, region = "PatchID")
+dipteryx.df <- inner_join(dipteryx.points, dipteryx@data, by = "id")
+#####
+```
+
+The data loading in the above code blocks comes from two seasons of tracking that occurred on Barro Colorado Island, Panama. Tracking occurred from Decemeber, 2015 to March, 2016 and again in the same months of 2017-2018. Four species of animals were caught and tracked: kinkajous, coatis, spider monkeys, and capuchins. Individual animals were fitted with eobs collars that collected a burst of 5 (6?) samples a second every 4 minutes. Collars collected data for 12 hour active periods, with species dependant timing, and automatically turned off during the inactive period. Most collars lasted for approximately three months. The data have been cleaned by removing datapoints with outlying height above elipsoid values and those with spatial coordinates that would require unrealistic velocities. Additionally, sample bursts were thinned to the last sample, as these are typically the most accurate. (Chat with Shauhin to confirm/add to data cleaning methods).
+
+We check our data prepartion and get an intial sense by visualizing data from one individual, Abby (a kinkajou)
+```{r visualize Abby}
+ggplot(as.data.frame(move_data_FFT[["Abby.4652"]]), aes(x = X, y = Y, group = NULL)) + geom_path(color = "purple", alpha = 0.5) +
+  geom_polygon(data = dipteryx.df, aes(long, lat, group = group), color = "black", fill = NA) + #tree crown layer
+  geom_polygon(data = BCI, aes(long, lat, group = group), color = "black", fill = "black", alpha = 0.05) + #BCI outline layer
+  xlim(c(min(as.data.frame(move_data_FFT[["Abby.4652"]])$X), max(as.data.frame(move_data_FFT[["Abby.4652"]])$X))) +
+  ylim(c(min(as.data.frame(move_data_FFT[["Abby.4652"]])$Y), max(as.data.frame(move_data_FFT[["Abby.4652"]])$Y))) +
+  theme_classic()
+```
+
+```{r}
+ggplot() +
+    geom_polygon(data = dipteryx.df, aes(long, lat, group = group), color = "purple", fill = "lavender") + #tree crown layer
+    geom_polygon(data = BCI, aes(long, lat, group = group), color = "black", fill = "black", alpha = 0.05) + #BCI outline layer
+    theme_classic()
+```
+
+And then we visualize all of the movement data together
+
+```{r, plot-all-FFT}
+FFT_Plot <- move_data_FFT %>% 
+  as.data.frame() %>% 
+  filter(year(timestamp) %in% c("2017", "2018")) %>% 
+  ggplot() +
+  geom_path(aes(x = location.long, y = location.lat, color = individual.local.identifier), alpha = 0.4) +
+  geom_polygon(data = fortify(BCI_latlon), aes(long, lat, group = group), color = "black", fill = "black", alpha = 0.03) + #BCI outline layer
+  facet_wrap(~individual.taxon.canonical.name) +
+  theme_classic() +
+  coord_fixed() +
+  labs(x = "Lon",
+       y = "Lat") +
+  #scale_x_continuous(breaks = c(625,627,629)) +
+  theme(legend.position = "none",
+        text = element_text(size =48),
+        strip.text = element_text(size = 64)
+        )
+
+tiff(filename = "..\\DOCS\\FFT_plot.tif", height = 2400, width = 2400)
+FFT_Plot
+dev.off()
+```
+
+# Point of Interest Identification
+
+We begin our point of interest identification by exploring the methods and parameters suggested by Dr. Chloe Braccis in the vignette for the Recurse package. We modify this general protocol by using the DBSCAN clustering algorithm, which improves upon Dr. Bracis approach by 1) self-estimating the number of clusters, 2) allowing points that are not clearly clustered to be binned into an other/unknown category, 3) using an algorithm that is based on distances between clustered points rather than the positions of the points in the parameter space, which often does a better job of capturing meaningful clusters with irrelgular or meandering shapes in the parameter space.
+
+## Initial Exploration, Single Kinkajou (Abby)
+
+We begin our exploration of methods for identifying points of interest by calculating the number of times Abby returns to the vicinity of GPS points in her movement track. To determine what constitutes a revisit, we set two parameters. The first, radius, determines how close a different section of abby's movement must come to a given point to count as a revisit. The second, threshold, determines how long Abby must be outside the radius of a given point for her return to be considered a revisit. We start by visualizing revisit values as a heatmap when the radius is set to 10 m (the smallest reasonable radius given GPS error and the size of dipteryx crowns, which we expect to be one of the primary drivers of location revisitation) and a threshold of 10 minutes (again, a lower bound on what one might consider the time necessary to constitute Abby leaving and coming back given the potential for GPS error to drift outside the radius)
+```{r recursions Abby}
+Abby_Visits <- getRecursions(move_data_FFT[["Abby.4652"]], radius = 10, threshold = 10, timeunits = "mins")
+{
+  plot(Abby_Visits, move_data_FFT[["Abby.4652"]]@coords) #next step, cluster with dbscan
+  plot(dipteryx, xlim = c(min(move_data_FFT[["Abby.4652"]]@coords[,"X"]), max(move_data_FFT[["Abby.4652"]]@coords[,"X"])), ylim = c(min(move_data_FFT[["Abby.4652"]]@coords[,"Y"]), max(move_data_FFT[["Abby.4652"]]@coords[, "Y"])), add = TRUE)
+}
+```
+
+Next, we visualize how these revisitation values can be used to identify boundaries on points of interest. One decision that needs to be made here is how often Abby needs to revisit a location to be considering in the clustering of GPS points in areas of interest. Throwing out some proportion of lower values prevents locations that Molly may have stopped at for considerable periods of time, but does not revisit often, from being considered in the identification of areas of interest. We start by setting the cutoff high, at the 70% quantile of revisitation scores. 
+
+The final parameter to consider is the minimum number of points the dbscan algorithm requires to consider something a cluster. Higher values here will tend to create fewer, and potentially larger clusters. Lower values will tend to create more and smaller clusters. We expect these trends to interact with the cutoff value for revisit scores, where high cutoffs might limit cluster sizes, regardless of minimum points, and lower cutoffs might yield larger, more diffuse clusters and/or an increased number of small clusters in less densely visited locations. We start by pairing the 70% quantile cutoff with minpoints = 20, and visualize the resulting clusters.
+
+```{r cluster Abby revisits threshold}
+visit_threshold <- quantile(Abby_Visits$revisits, 0.7)
+cluster_data <- as.data.frame(move_data_FFT[["Abby.4652"]]@coords[Abby_Visits$revisits >= visit_threshold,])
+Abby_clusters <- hdbscan(cluster_data, minPts = 20)
+Abby_colors <- c("#000000", colorRampPalette(brewer.pal(8, "Set2"))(length(Abby_clusters$cluster_scores)))
+Abby_clusters
+{
+  par(pty = "s")
+  plot(x = cluster_data$X, y = cluster_data$Y, col = Abby_colors[Abby_clusters$cluster + 1], asp = 1)
+  rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4],col = "light blue", border = "black")
+  plot(BCI, add = TRUE, col = "white")
+  lines(x = move_data_FFT[[1]]@coords[,"X"], y = move_data_FFT[[1]]@coords[,"Y"], col = alpha("black", 0.3)) #replot data over background
+  points(x = cluster_data$X, y = cluster_data$Y, col = Abby_colors[Abby_clusters$cluster + 1])
+  plot(dipteryx, xlim = c(min(cluster_data$X), max(cluster_data$X)), ylim = c(min(cluster_data$Y), max(cluster_data$Y)), add = TRUE)
+}
+```
+At least as a first pass, this clustering appears to be successful. Next, we consider parameter values to optimize clusterting across multiple indiduals and species.
+
+## Clustering All Individuals
+
+Having successfully run the clustering on this subset of the data, we now run it across all movement data.
+
+```{r FFT individual recursions loop, eval = FALSE}
+FFT_Recursions_r10_t10 <- vector("list", length = length(levels(move_data_FFT@trackId)))
+names(FFT_Recursions_r10_t10) <- levels(move_data_FFT@trackId)
+
+for(i in seq_along(levels(move_data_FFT@trackId))){
+  ID <- levels(move_data_FFT@trackId)[i]
+  FFT_Recursions_r10_t10[[i]] <- getRecursions(move_data_FFT[[ID]], radius = 10, threshold = 10, timeunits = "mins")
+  print(paste("completed recursion analysis for", ID, sep = " "))
+  gc()
+}
+
+#save(FFT_Recursions_r10_t10, file = "../Results/FFT_Recursions_r10_t10.Rdata") #Takes a long time
+```
+
+Next we look at clusters with a much lower cutoff of at the 20% quantile, with the same minpoints of 20.
+
+```{r cluster Abby spatial only}
+load("../Results/FFT_Recursions_r10_t10.Rdata")
+visit_threshold <- quantile(FFT_Recursions_r10_t10[[1]]$revisits, 0.2) #set threshold to value at the 0.2 quantile
+cluster_data <- as.data.frame(move_data_FFT[[1]]@coords[FFT_Recursions_r10_t10[[1]]$revisits >= visit_threshold,]) #remove points below threshold
+Abby_clusters <- hdbscan(cluster_data, minPts = 20) #cluster remaining points
+Abby_clusters
+Abby_colors <- c("#000000", colorRampPalette(brewer.pal(8, "Set2"))(length(Abby_clusters$cluster_scores)))
+
+#Plot telemetry data with points colored by cluster
+{
+  par(pty = "s")
+  plot(x = cluster_data$X, y = cluster_data$Y, col = Abby_colors[Abby_clusters$cluster + 1], asp = 1)
+  rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4],col = "light blue", border = "black")
+  plot(BCI, add = TRUE, col = "#e9fce9")
+  lines(x = move_data_FFT[[1]]@coords[,"X"], y = move_data_FFT[[1]]@coords[,"Y"], col = alpha("black", 0.3)) #replot data over background
+  points(x = cluster_data$X, y = cluster_data$Y, col = Abby_colors[Abby_clusters$cluster + 1])
+  plot(dipteryx, xlim = c(min(cluster_data$X), max(cluster_data$X)), ylim = c(min(cluster_data$Y), max(cluster_data$Y)), add = TRUE)
+}
+
+#store points in a spatial features data frame with a column to indicate the cluster of each point
+Abby_clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[1]]@coords), coords =c("X", "Y")) %>%
+  cbind(move_data_FFT[[1]], Abby_Visits["revisits"]) %>% 
+  st_sf() %>%
+  st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+  mutate(Cluster = NA)
+Abby_clustered_sf$Cluster[Abby_clustered_sf$revisits >= visit_threshold] <- Abby_clusters$cluster
+
+cluster_polygons <- Abby_clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry))) #create minimum convex hull pollygons around clusters for better visualization and boundary definitions
+
+ggplot() +
+  geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+  geom_path(data = as.data.frame(move_data_FFT[[1]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.2) +
+  geom_sf(data = Abby_clustered_sf, alpha = 0.3, size = 0.5, shape = 1) +
+  geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 1) +
+  geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.5 ) +
+  coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[1]]@coords)$X), max(as.data.frame(move_data_FFT[[1]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[1]]@coords)$Y), max(as.data.frame(move_data_FFT[[1]]@coords)$Y))) +
+  theme_classic() +
+  theme(panel.background = element_rect(fill = "light blue"),
+        legend.position = "none")
+
+
+```
+Looking at Abby's clustered points, we see a lot of clusters - probably more than we want. We create minimum convex polygons around clusters to help visualize them. Below, we increase the minpts to see if it reduces clusters. It does, but not by a lot.
+
+```{r cluster Abby revisits}
+cluster_data <- cbind(as.data.frame(move_data_FFT[["Abby.4652"]]@coords), Abby_Visits$revisits, Abby_Visits$residenceTime)
+Abby_clusters <- hdbscan(cluster_data, minPts = 30)
+Abby_clusters
+Abby_colors <- c("#000000", colorRampPalette(brewer.pal(8, "Set2"))(length(Abby_clusters$cluster_scores)))
+plot(x = cluster_data$X, y = cluster_data$Y, col = Abby_colors[Abby_clusters$cluster + 1])
+```
+### Clustering Paramter Exploration
+
+Following the insitial exploration with Abby's data, we look at various parameter combinations for all animals, saving the plots into our file system for review.
+
+#### Threshold 0.7, MinPts 20
+
+```{r recursive_visit_mapping thresh 07 minpt 20}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.7)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 20)
+  ID_colors <- c("#000000", colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-07_minpt-20/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+With this high threshold, we see a lot of important looking locations in the animal data being left out
+
+#### Threshold 0.5 MinPts 100
+
+```{r recursive_visit_mapping thresh 05 minpt 100}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.5)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 100)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-05_minpt-100/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+This moderate threshold with high MinPts produces spatially large clusters that my contain multiple points of interest, while missing other regions alltogether
+
+#### Threshold 0.5 minpt50
+
+```{r recursive_visit_mapping thresh 05 minpt50}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.5)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 50)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-05_minpt-50/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+These moderate values of Threshold and MinPts produce reasonably sized clusters, but still seem to leave some important locations out
+
+#### Threshold 0.5, MinPts 5
+
+```{r recursive_visit_mapping thresh 05 minpt5}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.5)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 5)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-05_minpt-5/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+Reducing MinPts this low creates an overabundance of tiny clusters
+
+#### Threshold 0.5, MinPts 20
+
+```{r recursive_visit_mapping thresh 05 minpt20}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.5)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 20)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-05_minpt-20/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+Too many small clusters
+
+#### Threshold 0.8, minpt 20
+
+
+
+```{r recursive_visit_mapping thresh 08 minpt20}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.8)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 20)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-08_minpt-20/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+Many important locations being left out
+
+#### thresh 0.2 minpt 20
+```{r recursive_visit_mapping thresh 02 minpt20}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.2)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits >= visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 20)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits >= visit_threshold] <- ID_clusters$cluster
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-02_minpt-20/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+THis lower threshold helps us capture more important locations, but wt minpt 20 regions are being broken into too many clusters.
+
+#### Threshold 0.2, MinPts 50
+
+```{r recursive_visit_mapping thresh 02 minpt50}
+for(i in seq_along(FFT_Recursions_r10_t10)){ 
+  ID <- names(FFT_Recursions_r10_t10)[i]
+  visit_threshold <- quantile(FFT_Recursions_r10_t10[[i]]$revisits, 0.2)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_r10_t10[[i]]$revisits > visit_threshold,]) #for low threshold, set exclusive bound (especially important for sp monkeys, where 0.2 threshold is often 1 revisit)
+  ID_clusters <- hdbscan(cluster_data, minPts = 50)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_r10_t10[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits > visit_threshold] <- ID_clusters$cluster #for low threshold, set exclusive bound
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  {
+    tiff(paste("./POI Maps/Thresh-02_minpt-50/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+```
+
+This is starting to look better, but it still seems there are a few too many clusters.
+
+### Revising Revisit Parameters.
+
+#### Buffer 30 min - Threshold 0.2, MinPts 50
+
+We also want to explore how adjusting the revisit calculations can affect clustering. If we rethink the revisit threshold (different from cutoff threshold for clustering) and say that an animal must be away for 30 minutes to count a revisit, what happens? In order to facilitate reanalysis of the clustered data, from this point forward we save Rdata with the clusters. (the full recurs objects are very large and hard to work with)
+
+```{r FFT individual recursions loop 30minbuffer}
+FFT_Recursions_30 <- vector("list", length = length(levels(move_data_FFT@trackId)))
+names(FFT_Recursions_30) <- levels(move_data_FFT@trackId)
+for(i in seq_along(levels(move_data_FFT@trackId))){
+  ID <- levels(move_data_FFT@trackId)[i]
+  FFT_Recursions_30[[i]] <- getRecursions(move_data_FFT[[ID]], radius = 10, threshold = 30, timeunits = "mins")
+  print(paste("completed recursion analysis for", ID, sep = " "))
+  gc()
+}
+```
+
+```{r recursive_visit30min_mapping thresh 02 minpt50}
+POIs <- vector("list", length = length(FFT_Recursions_30))
+names(POIs) <- names(FFT_Recursions_30)
+clustered_sfs <- vector("list", length = length(FFT_Recursions_30))
+names(clustered_sfs) <- names(FFT_Recursions_30)
+for(i in seq_along(FFT_Recursions_30)){ 
+  ID <- names(FFT_Recursions_30)[i]
+  visit_threshold <- quantile(FFT_Recursions_30[[i]]$revisits, 0.2)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_30[[i]]$revisits > visit_threshold,]) #for low threshold, set exclusive bound (especially important for sp monkeys, where 0.2 threshold is often 1 revisit)
+  ID_clusters <- hdbscan(cluster_data, minPts = 50)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_30[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17N +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits > visit_threshold] <- ID_clusters$cluster #for low threshold, set exclusive bound
+  clustered_sfs[[i]] <- clustered_sf
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  POIs[[i]] <- cluster_polygons
+  {
+    tiff(paste("../DOCS/POI Maps/Buff30_Thresh-02_minpt-50/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, size = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), size = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none")
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+save(POIs, file = "../Results/POIs.Rdata")
+save(clustered_sfs, file = "../Results/clustered_sfs.Rdata")
+```
+
+These clusters look as good or better as the best clusters using the 10 minute revisit buffer. We this stick with these parameter settings for a first pass at segmenting the paths.
+
+The helper functions below help to divide telemetry data into segments based on clusters
+```{r path_segmenter}
+get_path_segments <-  function(clustered_sf, clusters){
+  clustered_sf$Cluster_overlap <- st_intersects(clustered_sf, clusters) %>% sapply(function(X) if(length(X) == 0) 0 else X) #st_intersection returns an agbp object with empty elements where there is no overlap. the sapply function vectorizes this list, replacing empty elements with 0s. Resulting vector will be too long if a point overlaps multiple geometries
+  segments <- data.frame(unclass(rle(clustered_sf$Cluster_overlap)))
+  segments$linestring <- st_sfc(lapply(1:length(segments$values), function(X) st_linestring()))
+  segments$start_time <- as.POSIXct(NA)
+  segments$end_time <- as.POSIXct(NA)
+  for(i in seq_along(segments$values)){
+    if (i == 1) start <- 1 else start <- sum(segments$lengths[1:(i-1)]) #start segment at previous point
+    if (i == length(segments$values)) end <- nrow(clustered_sf) else end <- sum(segments$lengths[1:i]) + 1
+    segments$linestring[i] <- clustered_sf$geometry[start:end] %>% st_combine() %>% st_cast("LINESTRING")
+    segments$start_time[i] <- clustered_sf$timestamp[start]
+    segments$end_time[i] <- clustered_sf$timestamp[end]
+  }
+  path_segments <- st_sf(segments, crs = st_crs(clustered_sf)) %>%
+    clean_segments(clusters) %>%
+    bridge_adjacent_visits() %>% 
+    merge_adjacent_revisits()
+  print("path succefully segmented")
+  return(path_segments)
+}
+
+clean_segments <- function(path_segments, clusters){
+  for(i in 1:nrow(path_segments)) {
+    if (path_segments$value[i] == 0) { 
+      path_segments$linestring[i] <- path_segments$linestring[i] %>% st_difference(st_combine(clusters))
+      #in some cases, a segment can cross a cluster without having any points in it. In such a case, the conditional below will repair the line segment, treating the linear interpolation as it if does not enter the cluster
+      if ("sfc_MULTILINESTRING" %in% class(path_segments$linestring[i])) path_segments$linestring[i] <- path_segments$linestring[i] %>% 
+          st_coordinates() %>% 
+          .[,c(1,2)] %>% st_linestring("LINESTRING") %>% 
+          st_sfc(crs = st_crs(path_segments))
+    } else {
+      path_segments$linestring[i] <- path_segments$linestring[i] %>% st_intersection(filter(clusters, Cluster == path_segments$values[i])) # only keep piece of line_segment inside appropriate cluster
+      #in cases where linestring crosses itself, this operation will produce a multilinestring. The followig conditional will reconvert to a linestring
+      if ("sfc_MULTILINESTRING" %in% class(path_segments$linestring[i])) path_segments$linestring[i] <- path_segments$linestring[i] %>% 
+          st_coordinates() %>% 
+          .[,c("X","Y")] %>% st_linestring("LINESTRING") %>% 
+          st_sfc(crs = st_crs(path_segments))
+    }
+  }
+  return(path_segments)
+}
+
+bridge_adjacent_visits <- function(path_segments) {
+  visits <- which(path_segments$values != 0) #rows giving segments inside a cluster
+  unbridged <- visits[which(path_segments[visits + 1,]$values != 0)] #rows giving segments inside a cluster where the next segment is also in a cluster
+  if(length(unbridged) == 0) return(path_segments) #no adjacent visit segments to bridge
+  unbridged_sections <- path_segments %>% split(f = cumsum(1:nrow(.) %in% (unbridged + 1))) #counts the number of unbridged sections prir to each row, and uses this count to group and split the dataframe
+  for(i in 1:(length(unbridged_sections) - 1)) {
+    line_start <- tail(unbridged_sections[[i]], n = 1)$linestring %>% st_coordinates() %>% .[nrow(.), c("X","Y")] #start linesegment at last coordinate of last linestring in current section
+    line_end <- unbridged_sections[[i + 1]]$linestring[1] %>% st_coordinates() %>% .[1, c("X","Y")] #end linesegment at first coordinate of first linestring in next section
+    
+    #create new sf row using connective linestring
+    newrow <- st_linestring(rbind(line_start, line_end)) %>% 
+      st_sfc(crs = st_crs(path_segments)) %>% 
+      #note that in the line below, start time comes from the next section, while end time comes from the current section. This is because start and end times are inclusive, so each segment "starts" before the previous one "ends" 
+      st_sf(data.frame(lengths = 0, values = 0, start_time = unbridged_sections[[i+1]]$start_time[1], end_time = tail(unbridged_sections[[i]], n = 1)$end_time))
+    st_geometry(newrow) <- "linestring"
+    unbridged_sections[[i]] <- rbind(unbridged_sections[[i]], newrow)
+  }
+  return(do.call(rbind, unbridged_sections))
+}
+
+
+merge_adjacent_revisits <-  function(path_segments, revisit_threshold = 7) {
+  #revisit threshold gives the minimum number of points outside a cluster before a revsit should be coded. A revisit will always be coded if a different cluster was visited in between visits, regardless of threshold value
+  #relies on bridging segments between all visit segments, so must run "bridge_adjacent_visits" first
+  visits <- which(path_segments$values != 0)
+  adjacent_revisits <- visits[
+    path_segments$values[visits[-length(visits)]] - path_segments$values[visits[-1]] == 0 & #check if cluster location of visit is equal to cluster location of next visit and. . .
+      path_segments$lengths[visits[-length(visits)] + 1] < revisit_threshold] #. . . whether the intervening bridge segment has fewer coordinates than the revisit threshold
+  
+  #iteratively recreate path_segments by combining adjacent revisits
+  while(length(adjacent_revisits) > 0) {
+    adjacent_revisit <- path_segments[adjacent_revisits[1]:(adjacent_revisits[1] + 2),]
+    new_segment <- adjacent_revisit$linestring %>% 
+      st_union() %>% 
+      st_coordinates() %>% 
+      .[,c("X","Y")] %>% 
+      st_linestring("LINESTRING") %>% 
+      st_sfc(crs = st_crs(adjacent_revisit)) %>% 
+      st_sf(data.frame(
+        lengths = sum(adjacent_revisit$lengths),
+        values = adjacent_revisit$values[1],
+        start_time = adjacent_revisit$start_time[1],
+        end_time = adjacent_revisit$end_time[3]))
+    st_geometry(new_segment) <- "linestring" #rename geometry column
+    
+    if(adjacent_revisits[1] == 1) {preceding_section <- new_segment #edge case, adjacent revisit is the first visit in the trajectory
+    } else preceding_section <- rbind(path_segments[1:(adjacent_revisits[1] - 1),], #section preceding adjacent revisit
+                                      new_segment)
+    
+    if((adjacent_revisits[1] + 2) == nrow(path_segments)) { path_segments <- preceding_section #edge case, trajectory ends in adjacent revisit
+    } else path_segments <- rbind(preceding_section, 
+                                  path_segments[(adjacent_revisits[1] + 3):nrow(path_segments),]) #section after adjacent revisit
+    
+    
+    #recalculate visits and adjacent revisits
+    visits <- which(path_segments$values != 0)
+    adjacent_revisits <- visits[
+      path_segments$values[visits[-length(visits)]] - path_segments$values[visits[-1]] == 0 & #check if cluster location of visit is equal to cluster location of next visit and. . .
+        path_segments$lengths[visits[-length(visits)] + 1] < revisit_threshold] #. . . whether the intervening bridge segment has fewer coordinates than the revisit threshold
+  }
+  return(path_segments)
+}
+```
+
+```{r load processed data}
+load("../Results/POIs.Rdata")
+load("../Results/clustered_sfs.Rdata")
+```
+
+We test a segmenting approach using Abby's data.
+```{r path segmentation Abby}
+Abby_segments <- clustered_sfs[[1]] %>% filter(day %in% c(1,2)) %>% group_by(day) %>% group_modify(~ get_path_segments(.x, clusters = POIs[[1]])) %>% st_sf()
+```
+
+```{r Abby plotting}
+pdf("./POI Maps/Buff30_thresh-02_minpt-50/segments_by_day/Abby.4652.pdf", width = 11, height = 8)
+for(Day in unique(Abby_segments$day)){
+  dayplot <- ggplot() + 
+    geom_sf(data = POIs[[1]]) + 
+    geom_sf_text(data = POIs[[1]], aes(label = Cluster)) + 
+    geom_sf(data = filter(clustered_sfs[[1]], day == Day), color = "black", size = 2) + 
+    geom_sf(data = filter(Abby_segments, day == Day), aes(color = factor(values)), size = 1) + 
+    theme_classic() + 
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, size = 36)) + 
+    labs(title = paste("Day", Day, sep = " "))
+  print(dayplot)
+}
+dev.off()
+
+```
+
+Seeing that this approach works, we apply it to all of the individuals
+
+```{r path segmentation all, eval = FALSE}
+FFT_segments <- vector("list", length = length(clustered_sfs))
+for (i in seq_along(clustered_sfs)){
+  FFT_segments[[i]] <- clustered_sfs[[i]] %>% 
+    group_by(day) %>% 
+    group_modify(~ get_path_segments(.x, clusters = POIs[[i]])) %>% 
+    st_sf() %>% 
+    mutate(individual.local.identifier = names(clustered_sfs)[i])
+}
+names(FFT_segments) <- names(clustered_sfs)
+save(FFT_segments, file = "../Results/FFT_segments.Rdata")
+```
+
+```{r segment visualization}
+load("../Results/FFT_segments.Rdata")
+for(i in seq_along(FFT_segments)) {
+  pdf(paste("../DOCS/POI Maps/Buff30_thresh-02_minpt-50/segments_by_day/", names(FFT_segments)[i], ".pdf", sep = ""), width = 11, height = 8)
+  for(Day in unique(FFT_segments[[i]]$day)){
+    dayplot <- ggplot() + 
+      geom_sf(data = POIs[[i]]) + 
+      geom_sf_text(data = POIs[[i]], aes(label = Cluster)) + 
+      geom_sf(data = filter(clustered_sfs[[i]], day == Day), color = "black", size = 2) + 
+      geom_sf(data = filter(FFT_segments[[i]], day == Day), aes(color = factor(values)), size = 1) + 
+      theme_classic() + 
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5, size = 36)) + 
+      labs(title = paste(names(FFT_segments)[i], " - Day ", Day, sep = ""))
+    print(dayplot)
+  }
+dev.off()
+print(paste("Complete Dayplot visualization for ", names(FFT_segments)[i]))
+}
+```
+
+#### Threshold 0.5, MinPts = 50
+
+Looking at the visuals created by the code below, this parameterization creates fewer clusters (as expected). This may merge regions that are biologically/cognitively distinct, but visual inspection reveals that polygons are not unreasonably large relative to the spread of locations. We begin linearity analysis (in a new document) using data clustered in this way so as to minimize computational complexity while maintaining as much accuracy as possible.
+
+```{r recursive_visit30min_mapping thresh 05 minpt50}
+POIs_05_50 <- vector("list", length = length(FFT_Recursions_30))
+names(POIs_05_50) <- names(FFT_Recursions_30)
+clustered_sfs_05_50 <- vector("list", length = length(FFT_Recursions_30))
+names(clustered_sfs_05_50) <- names(FFT_Recursions_30)
+for(i in seq_along(FFT_Recursions_30)){ 
+  ID <- names(FFT_Recursions_30)[i]
+  visit_threshold <- quantile(FFT_Recursions_30[[i]]$revisits, 0.5)
+  cluster_data <- as.data.frame(move_data_FFT[[ID]]@coords[FFT_Recursions_30[[i]]$revisits > visit_threshold,])
+  ID_clusters <- hdbscan(cluster_data, minPts = 50)
+  ID_colors <- c(alpha("black", 0.5), colorRampPalette(brewer.pal(8, "Set1"))(length(ID_clusters$cluster_scores)))
+  
+  clustered_sf <- st_as_sf(as.data.frame(move_data_FFT[[i]]@coords), coords =c("X", "Y")) %>%
+    cbind(move_data_FFT[[i]], FFT_Recursions_30[[i]]["revisits"]) %>% 
+    st_sf() %>%
+    st_set_crs(CRS("+proj=utm +zone=17 +ellps=WGS84")) %>% 
+    mutate(Cluster = NA)
+  clustered_sf$Cluster[clustered_sf$revisits > visit_threshold] <- ID_clusters$cluster #for low threshold, set exclusive bound
+  clustered_sfs_05_50[[i]] <- clustered_sf
+  
+  cluster_polygons <- clustered_sf %>% filter(! is.na(Cluster) & Cluster != 0) %>% group_by(Cluster) %>% summarise(ConvexHull = st_convex_hull(st_union(geometry)))
+  POIs_05_50[[i]] <- cluster_polygons
+  
+  #plot clustered paths
+  {
+    tiff(paste("../DOCS/POI Maps/Buff30_Thresh-05_minpt-50/", ID, ".tif", sep = ""), height = 1200, width = 1200)
+    cluster_map <- ggplot() +
+      geom_polygon(data = BCI.df, aes(long, lat, group = group), color = "black", fill = "#e9fce9") +
+      geom_path(data = as.data.frame(move_data_FFT[[i]]@coords), aes (x = X, y = Y), color = "black", alpha = 0.1) +
+      geom_sf(data = clustered_sf, alpha = 0.4, size = 2, shape = 1) +
+      geom_sf(data = cluster_polygons, aes(color = factor(Cluster)), fill = NA, linewidth = 2) +
+      geom_polygon(data = dipteryx.df, aes(long, lat, group = group), linewidth = 1, color = "black", fill = "green", alpha = 0.3 ) +
+      coord_sf(xlim =c(min(as.data.frame(move_data_FFT[[i]]@coords)$X), max(as.data.frame(move_data_FFT[[i]]@coords)$X)), ylim = c(min(as.data.frame(move_data_FFT[[i]]@coords)$Y), max(as.data.frame(move_data_FFT[[i]]@coords)$Y))) +
+      theme_classic() +
+      theme(panel.background = element_rect(fill = "light blue"),
+            legend.position = "none",
+            text = element_text(size = 24)) +
+      scale_x_continuous(label = I) +
+      scale_y_continuous(label = I) 
+    print(cluster_map)
+    dev.off()
+  }
+  print(paste("mapped", ID, sep = " "))
+}
+save(POIs_05_50, file = "../Data/processed/POIs_05_50.Rdata")
+save(clustered_sfs_05_50, file = "../Data/processed/clustered_sfs_05_50.Rdata")
+```
+
+```{r path segmentation all_05_50, eval = FALSE}
+FFT_segments_05_50 <- vector("list", length = length(clustered_sfs_05_50))
+for (i in seq_along(clustered_sfs_05_50)){
+  FFT_segments_05_50[[i]] <- clustered_sfs_05_50[[i]] %>% 
+    group_by(day) %>% 
+    group_modify(~ get_path_segments(.x, clusters = POIs_05_50[[i]])) %>% 
+    st_sf() %>% 
+    mutate(individual.local.identifier = names(clustered_sfs_05_50)[i])
+  print(paste("All paths segmented for ", names(clustered_sfs_05_50)[i], sep = ""))
+}
+names(FFT_segments_05_50) <- names(clustered_sfs_05_50)
+save(FFT_segments_05_50, file = "../Data/processed/FFT_segments_05_50.Rdata")
+```
+
+```{r segment visualization_05_50}
+load("../Data/processed/FFT_segments_05_50.Rdata")
+for(i in seq_along(FFT_segments_05_50)) {
+  pdf(paste("../DOCS/POI Maps/Buff30_thresh-05_minpt-50/segments_by_day/", names(FFT_segments_05_50)[i], ".pdf", sep = ""), width = 11, height = 8)
+  for(Day in unique(FFT_segments_05_50[[i]]$day)){
+    dayplot <- ggplot() + 
+      geom_sf(data = POIs_05_50[[i]]) + 
+      geom_sf_text(data = POIs_05_50[[i]], aes(label = Cluster)) + 
+      geom_sf(data = filter(clustered_sfs_05_50[[i]], day == Day), color = "black", size = 2) + 
+      geom_sf(data = filter(FFT_segments_05_50[[i]], day == Day), aes(color = factor(values)), size = 1) + 
+      theme_classic() + 
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5, size = 36)) + 
+      labs(title = paste(names(FFT_segments_05_50)[i], " - Day ", Day, sep = ""))
+    print(dayplot)
+  }
+dev.off()
+print(paste("Complete Dayplot visualization for ", names(FFT_segments_05_50)[i], sep = ""))
+}
+```

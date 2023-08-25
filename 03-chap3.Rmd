@@ -1,0 +1,19 @@
+---
+#bibliography: bib/references3.json
+---
+# Comparing the navigation of mammals on BCI reveals ecological drivers of cognitive evolution
+
+<!-- This adds a different "short title" -->
+\chaptermark {Navigation and Cognition}
+
+<!-- Required to number equations in HTML files -->
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { equationNumbers: { autoNumber: "AMS" } }
+});
+</script>
+
+
+```{r chpt3, echo = FALSE, error=FALSE, message = FALSE, results='asis'}
+cat(knitr::knit_child("BCI Anniversary\\DOCS\\navigation on BCI markdown.Rmd", envir = environment(), quiet = TRUE))
+```

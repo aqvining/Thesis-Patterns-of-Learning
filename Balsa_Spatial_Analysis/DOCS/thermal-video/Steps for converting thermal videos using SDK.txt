@@ -1,0 +1,12 @@
+# Steps for converting thermal videos using SDK
+#lab-notebook
+#balsa
+#thermal-video
+
+1. Download and install python
+2. Download and install a python IDE (e.g. Spyder)
+3. Follow steps for installing FLIR Science File Software Development Kit:[https://flir.custhelp.com/app/answers/detail/a_id/3504/track/AvNX~QqjDv8S~RntGpwe~yJ7Ve8qVC75Mv~D~zj~PP8K/session/L2F2LzEvdGltZS8xNjA0MDY5MjUzL2dlbi8xNjA0MDY5MjUzL3NpZC9mVW41ZWE0VXlxSU45bFJQNnFrZERkTjJvRDNWYmRKczNrQ1Bjb0RKMiU3RVhEVmpRdlo3dG5Yc1h1bEx1Q2IlN0VsbFFlMGpUZ1NIbVYwdmxBVUpUeVlnWVI0TGhEcSU3RXp0RiU3RXBkWVdUV045TGpFbFhoXzVhVmptdkRyQSUyMSUyMQ==](https://flir.custhelp.com/app/answers/detail/a_id/3504/track/AvNX~QqjDv8S~RntGpwe~yJ7Ve8qVC75Mv~D~zj~PP8K/session/L2F2LzEvdGltZS8xNjA0MDY5MjUzL2dlbi8xNjA0MDY5MjUzL3NpZC9mVW41ZWE0VXlxSU45bFJQNnFrZERkTjJvRDNWYmRKczNrQ1Bjb0RKMiU3RVhEVmpRdlo3dG5Yc1h1bEx1Q2IlN0VsbFFlMGpUZ1NIbVYwdmxBVUpUeVlnWVI0TGhEcSU3RXp0RiU3RXBkWVdUV045TGpFbFhoXzVhVmptdkRyQSUyMSUyMQ==) 
+	1. The files downloaded in step 2 at above link have an error. Between steps 2 and 3, you must replace the setup.py file in the directory indicated by step 3 to one I received from tech support, stored in my shared MPI directory under analysis/Balsa_Navigation
+4. Make sure you installed the sdk in the python environment your IDE is using
+5. Read carters code and die inside (file added to my balsa_spatial_navigation repository, something like write_thermal_videos_hard_drive.jpyst)
+6. Find a new plan

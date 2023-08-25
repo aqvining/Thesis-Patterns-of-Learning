@@ -1,0 +1,12 @@
+# Daily Log May 28 2021
+#lab-notebook
+
+For #lemur and primate #traplining project, developed #brms model in Manuscript_Markdown.Rmd (owncloud > Alexander’s Dissertation > traplining > Docs)
+	* Integrated Source and Species in distance analysis
+
+Talked to FLIR sales about #thermal-video software.
+	* Received 4 product licenses for three month trials of Thermal Studio Standard (will not make avi,  it maybe folder of jpgs.
+	* Free trial of pro is also available online
+	* Can get FLIR tools plus refunded w/order number
+
+SUBMITTED LEMUR SLEEP MANUSCRIPT TO PLOS 1!!!

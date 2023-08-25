@@ -1,0 +1,74 @@
+data{
+    int<lower=1> N;
+    int<lower=1> N_Region;
+    int<lower=1> N_Study_night;
+    real Minutes_Per_Hour[N];
+    int Region[N];
+    real Relative_Density[N];
+    real Average_Density[N];
+    int Study_night[N];
+}
+parameters{
+    real ap;
+    real am;
+    vector[N_Region] ap_Region;
+    vector[N_Region] am_Region;
+    vector[N_Study_night] ap_night;
+    vector[N_Study_night] am_night;
+    real bp_Average_Density;
+    real bm_Average_Density;
+    real bp_Relative_Density;
+    real bm_Relative_Density;
+    real<lower=0> scale;
+    real<lower=0> am_sigma_night;
+    real<lower=0> ap_sigma_night;
+    real<lower=0> ap_sigma_Region;
+    real<lower=0> am_sigma_Region;
+}
+model{
+    vector[N] mu;
+    vector[N] p;
+    am_sigma_Region ~ exponential( 1 );
+    ap_sigma_Region ~ exponential( 1 );
+    ap_sigma_night ~ exponential( 1 );
+    am_sigma_night ~ exponential( 1 );
+    scale ~ exponential( 1 );
+    bm_Relative_Density ~ normal( 0 , 2 );
+    bp_Relative_Density ~ normal( 0 , 2 );
+    bm_Average_Density ~ normal( 0 , 2 );
+    bp_Average_Density ~ normal( 0 , 2 );
+    am_night ~ normal( 0 , am_sigma_night );
+    ap_night ~ normal( 0 , ap_sigma_night );
+    am_Region ~ normal( 0 , am_sigma_Region );
+    ap_Region ~ normal( 0 , ap_sigma_Region );
+    am ~ normal( 0 , 2 );
+    ap ~ normal( 0 , 2 );
+    for ( i in 1:N ) {
+        mu[i] = am + am_Region[Region[i]] + bm_Average_Density * Average_Density[i] +      bm_Relative_Density * Relative_Density[i] + am_night[Study_night[i]];
+        mu[i] = exp(mu[i]);
+    }
+    for ( i in 1:N ) {
+        p[i] = ap + ap_Region[Region[i]] + bp_Average_Density * Average_Density[i] +      bp_Relative_Density * Relative_Density[i] + ap_night[Study_night[i]];
+        p[i] = inv_logit(p[i]);
+    }
+    for ( i in 1:N ) {
+    if (Minutes_Per_Hour[i] == 0)
+target += (bernoulli_lpmf(1|p[i]));
+else
+target += (bernoulli_lpmf(0|p[i]) + gamma_lpdf(Minutes_Per_Hour[i]|mu[i]/scale,1/scale));
+    }//i 
+}
+generated quantities{
+    vector[N] mu;
+    vector[N] p;
+    for ( i in 1:N ) {
+        mu[i] = am + am_Region[Region[i]] + bm_Average_Density * Average_Density[i] +      bm_Relative_Density * Relative_Density[i] + am_night[Study_night[i]];
+        mu[i] = exp(mu[i]);
+    }
+    for ( i in 1:N ) {
+        p[i] = ap + ap_Region[Region[i]] + bp_Average_Density * Average_Density[i] +      bp_Relative_Density * Relative_Density[i] + ap_night[Study_night[i]];
+        p[i] = inv_logit(p[i]);
+    }
+    for ( i in 1:N ) {
+    }//i 
+}

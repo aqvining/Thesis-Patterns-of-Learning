@@ -1,0 +1,847 @@
+---
+title: "Gamma-Generalized-Ricker"
+author: "Alexander Vining"
+date: "2023-05-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(dplyr)
+library(sf)
+library(lwgeom)
+library(ggplot2)
+library(ggridges)
+library(RColorBrewer)
+library(purrr)
+library(tidyr)
+library(rstan)
+library(scales)
+
+load(file = "../Data/processed/POIs_05_50.Rdata")
+load(file = "../Data/processed/clustered_sfs_05_50.Rdata")
+load(file = "../Data/processed/FFT_segments_05_50.Rdata")
+
+FFT_segments_05_50 <- FFT_segments_05_50 %>% map_dfr(~ .x) #map from list to one data frame
+load(file = "../DATA/processed/FFT_segments_05_50_modified.Rdata")
+model0e2Data <- FFT_segments_05_50_modified %>% filter(as.numeric(D) > 10) %>% #remove data where the animal returned to its starting cluster
+  filter(D != length) #remove data where the animal traveled exactly the minimum. There are only 4 instance where this is the case. It would be worth exploring ways to include these, but the likelihood function of the model is undefined when straightness = 1
+```
+
+# Model 0
+
+```{r model0e2-Perrson}
+
+model0e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000
+)
+options(mc.cores = parallel::detectCores())
+model0e2_fit <- stan(file = "Model0e2.stan", #same as Model0e.stan
+                   data = model0e2Data_Stan,
+                   chains = 4,
+                   iter = 500,
+                   warmup = 250)
+
+save(model0e2_fit, file = "../results/model0e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+traceplot(model0e2_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+pairs(model0e2_fit, pars = c("a", "b", "c", "alpha", "lp__"))
+summary(model0e2_fit, pars = c("b", "a"))$summary
+```
+
+```{r model0e2-posteriors}
+load(file = "../results/model0e2_fit")
+model0e2_draws <- extract(model0e2_fit)
+
+
+model0e2_draws %>% as.data.frame() %>% select(a, b, c, alpha) %>% pivot_longer(a:alpha, values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y = mean(model0e2_draws$a)*((x/mean(model0e2_draws$b)) *exp(1-x/(mean(model0e2_draws$b))))^mean(model0e2_draws$c)
+{
+plot(model0e2Data_Stan$dist, model0e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y, col = "red")
+}
+
+{
+plot(model0e2Data_Stan$dist, model0e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y, col = "red")
+}
+```
+
+```{r model0e2-residuals}
+model0e2_predictions <- data.frame(delta_length_hat_mean = apply(model0e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model0e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model0e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model0e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model0e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model0e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model0e2_predictions %>% ggplot(aes(x = as.numeric(model0e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model0e2_predictions$pearson_resid_mean)
+
+sum(model0e2_predictions$pearson_resid_mean ^2)/nrow(model0e2_predictions)
+
+```
+
+# Model 1
+
+```{r model1e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model1e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)])
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model1e2_fit <- stan(file = "Model1e2.stan", 
+                   data = model1e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model1e2_fit, file = "../results/model1e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+load(file = "../results/model1e2_fit")
+traceplot(model1e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+pairs(model1e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+summary(model1e2_fit, pars = c("log_a", "b", "c"))$summary
+
+```
+
+```{r model0d-posteriors}
+
+model1e2_draws <- rstan::extract(model1e2_fit)
+
+
+model1e2_draws[!(names(model1e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y1 = exp(mean(model1e2_draws$log_a[,1]))*((x/mean(model1e2_draws$b)) *exp(1-x/(mean(model1e2_draws$b))))^mean(model1e2_draws$c)
+y2 = exp(mean(model1e2_draws$log_a[,2]))*((x/mean(model1e2_draws$b)) *exp(1-x/(mean(model1e2_draws$b))))^mean(model1e2_draws$c)
+y3 = exp(mean(model1e2_draws$log_a[,3]))*((x/mean(model1e2_draws$b)) *exp(1-x/(mean(model1e2_draws$b))))^mean(model1e2_draws$c)
+y4 = exp(mean(model1e2_draws$log_a[,4]))*((x/mean(model1e2_draws$b)) *exp(1-x/(mean(model1e2_draws$b))))^mean(model1e2_draws$c)
+{
+plot(model1e2Data_Stan$dist, model1e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+
+{
+plot(model1e2Data_Stan$dist, model1e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+```
+
+```{r model1e2-residuals}
+model1e2_predictions <- data.frame(delta_length_hat_mean = apply(model1e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model1e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model1e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model1e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model1e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model1e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model1e2_predictions %>% ggplot(aes(x = as.numeric(model1e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model1e2_predictions$pearson_resid_mean)
+
+sum(model1e2_predictions$pearson_resid_mean ^2)/nrow(model1e2_predictions)
+
+```
+
+# Model 2 - Species Adjustment to b
+
+```{r model2e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model2e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)])
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model2e2_fit <- stan(file = "Model2e2.stan", 
+                   data = model2e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model2e2_fit, file = "../results/model2e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+load(file = "../results/model2e2_fit")
+traceplot(model2e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+pairs(model2e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+summary(model2e2_fit, pars = c("log_a", "b", "c"))$summary
+
+```
+
+```{r model0d-posteriors}
+
+model2e2_draws <- rstan::extract(model2e2_fit)
+
+
+model2e2_draws[!(names(model2e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y1 = exp(mean(model2e2_draws$log_a[,1]))*((x/mean(model2e2_draws$b[,1])) *exp(1-x/(mean(model2e2_draws$b[,1]))))^mean(model2e2_draws$c)
+y2 = exp(mean(model2e2_draws$log_a[,2]))*((x/mean(model2e2_draws$b[,2])) *exp(1-x/(mean(model2e2_draws$b[,2]))))^mean(model2e2_draws$c)
+y3 = exp(mean(model2e2_draws$log_a[,3]))*((x/mean(model2e2_draws$b[,3])) *exp(1-x/(mean(model2e2_draws$b[,3]))))^mean(model2e2_draws$c)
+y4 = exp(mean(model2e2_draws$log_a[,4]))*((x/mean(model2e2_draws$b[,4])) *exp(1-x/(mean(model2e2_draws$b[,4]))))^mean(model2e2_draws$c)
+{
+plot(model2e2Data_Stan$dist, model2e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+
+{
+plot(model2e2Data_Stan$dist, model2e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+```
+
+```{r model1e2-residuals}
+model2e2_predictions <- data.frame(delta_length_hat_mean = apply(model2e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model2e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model2e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model2e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model2e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model2e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model2e2_predictions %>% ggplot(aes(x = as.numeric(model2e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model2e2_predictions$pearson_resid_mean)
+
+sum(model2e2_predictions$pearson_resid_mean ^2)/nrow(model2e2_predictions)
+
+```
+
+# Model 3 - Species Adjustment to c
+
+```{r model2e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model3e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)])
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model3e2_fit <- stan(file = "Model3e2.stan", 
+                   data = model3e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model3e2_fit, file = "../results/model3e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+load(file = "../results/model3e2_fit")
+traceplot(model3e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+pairs(model3e2_fit, pars = c("log_a", "b", "c", "alpha", "lp__"))
+summary(model3e2_fit, pars = c("log_a", "b", "c"))$summary
+
+```
+
+```{r model0d-posteriors}
+
+model3e2_draws <- rstan::extract(model3e2_fit)
+
+
+model3e2_draws[!(names(model3e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__ & !contains("b")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y1 = exp(mean(model3e2_draws$log_a[,1]))*((x/mean(model3e2_draws$b[,1])) *exp(1-x/(mean(model3e2_draws$b[,1]))))^mean(model3e2_draws$c)
+y2 = exp(mean(model3e2_draws$log_a[,2]))*((x/mean(model3e2_draws$b[,2])) *exp(1-x/(mean(model3e2_draws$b[,2]))))^mean(model3e2_draws$c)
+y3 = exp(mean(model3e2_draws$log_a[,3]))*((x/mean(model3e2_draws$b[,3])) *exp(1-x/(mean(model3e2_draws$b[,3]))))^mean(model3e2_draws$c)
+y4 = exp(mean(model3e2_draws$log_a[,4]))*((x/mean(model3e2_draws$b[,4])) *exp(1-x/(mean(model3e2_draws$b[,4]))))^mean(model3e2_draws$c)
+{
+plot(model3e2Data_Stan$dist, model3e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+
+{
+plot(model3e2Data_Stan$dist, model3e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+```
+
+```{r model1e2-residuals}
+model3e2_predictions <- data.frame(delta_length_hat_mean = apply(model3e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model3e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model3e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model3e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model3e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model3e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model3e2_predictions %>% ggplot(aes(x = as.numeric(model3e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model3e2_predictions$pearson_resid_mean)
+
+sum(model3e2_predictions$pearson_resid_mean ^2)/nrow(model3e2_predictions)
+
+```
+
+
+# Model 4 - Experience effects on a
+
+```{r model2e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model4e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  Exp = model0e2Data$transitExp,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)])
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model4e2_fit <- stan(file = "model4e2.stan", 
+                   data = model4e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model4e2_fit, file = "../results/model4e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+load(file = "../results/model4e2_fit")
+traceplot(model4e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+pairs(model4e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+summary(model4e2_fit, pars = c("log_a0", "r", "b", "c"))$summary
+
+```
+
+```{r model0d-posteriors}
+
+model4e2_draws <- rstan::extract(model4e2_fit)
+
+
+model4e2_draws[!(names(model4e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__ & !contains("b")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,3, by = 0.005)
+
+y1 = exp(mean(model4e2_draws$log_a[,1]))*((x/mean(model4e2_draws$b[,1])) *exp(1-x/(mean(model4e2_draws$b[,1]))))^mean(model4e2_draws$c)
+y2 = exp(mean(model4e2_draws$log_a[,2]))*((x/mean(model4e2_draws$b[,2])) *exp(1-x/(mean(model4e2_draws$b[,2]))))^mean(model4e2_draws$c)
+y3 = exp(mean(model4e2_draws$log_a[,3]))*((x/mean(model4e2_draws$b[,3])) *exp(1-x/(mean(model4e2_draws$b[,3]))))^mean(model4e2_draws$c)
+y4 = exp(mean(model4e2_draws$log_a[,4]))*((x/mean(model4e2_draws$b[,4])) *exp(1-x/(mean(model4e2_draws$b[,4]))))^mean(model4e2_draws$c)
+{
+plot(model4e2Data_Stan$dist, model4e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+
+{
+plot(model4e2Data_Stan$dist, model4e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+```
+
+```{r model1e2-residuals}
+model4e2_predictions <- data.frame(delta_length_hat_mean = apply(model4e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model4e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model4e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model4e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model4e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model4e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model4e2_predictions %>% ggplot(aes(x = as.numeric(model4e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model4e2_predictions$pearson_resid_mean)
+
+sum(model4e2_predictions$pearson_resid_mean ^2)/nrow(model4e2_predictions)
+
+```
+
+# Model 5 - Species Level Learning Effects
+
+```{r model2e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model5e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  Exp = model0e2Data$transitExp,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)])
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model5e2_fit <- stan(file = "model5e2.stan", 
+                   data = model5e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model5e2_fit, file = "../results/model5e2_fit")
+
+```
+
+```{r model0e-diagnostics}
+load(file = "../results/model5e2_fit")
+traceplot(model5e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+pairs(model5e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+summary(model5e2_fit, pars = c("log_a0", "r", "b", "c"))$summary
+
+```
+
+```{r model0d-posteriors}
+
+model5e2_draws <- rstan::extract(model5e2_fit)
+
+
+model5e2_draws[!(names(model5e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__ & !contains("b")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r plot-expectations}
+x = seq(0,max(model5e2Data_Stan$dist), by = 0.005)
+
+y1 = exp(mean(model5e2_draws$log_a[,1]))*((x/mean(model5e2_draws$b[,1])) *exp(1-x/(mean(model5e2_draws$b[,1]))))^mean(model5e2_draws$c)
+y2 = exp(mean(model5e2_draws$log_a[,2]))*((x/mean(model5e2_draws$b[,2])) *exp(1-x/(mean(model5e2_draws$b[,2]))))^mean(model5e2_draws$c)
+y3 = exp(mean(model5e2_draws$log_a[,3]))*((x/mean(model5e2_draws$b[,3])) *exp(1-x/(mean(model5e2_draws$b[,3]))))^mean(model5e2_draws$c)
+y4 = exp(mean(model5e2_draws$log_a[,4]))*((x/mean(model5e2_draws$b[,4])) *exp(1-x/(mean(model5e2_draws$b[,4]))))^mean(model5e2_draws$c)
+{
+plot(model5e2Data_Stan$dist, model5e2Data_Stan$delta_length, col = alpha("grey40", 0.04), pch = 16)
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+
+{
+plot(model5e2Data_Stan$dist, model5e2Data_Stan$delta_length, col = alpha("grey40", 0.02), pch = 16, ylim = c(0,1))
+lines(x, y1, col = "red")
+lines(x, y2, col = "blue")
+lines(x, y3, col = "green")
+lines(x, y4, col = "orange")
+}
+
+prediction_df_m5e2 <- data.frame(x = x, Ateles.geoffroyi = y1, Cebus.capucinus = y2, Nasua.narica = y3, Potos.flavus = y4) %>% pivot_longer(!x, names_to = "Species", values_to = "Pred")
+```
+
+```{r model1e2-residuals}
+model5e2_predictions <- data.frame(delta_length_hat_mean = apply(model5e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model5e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model5e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model5e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model5e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model5e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model5e2_predictions %>% ggplot(aes(x = as.numeric(model5e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model5e2_predictions$pearson_resid_mean)
+
+sum(model5e2_predictions$pearson_resid_mean ^2)/nrow(model5e2_predictions)
+
+```
+
+```{r, posterior_predictions}
+predictors = list(Species = 1:4, dist = seq(0,max(model5e2Data_Stan$dist), by = 0.05), transitExp = 1:max(model5e2Data_Stan$Exp)) %>% # list of predictor levels
+  expand.grid() #all predictor combinations
+
+get_expectation_m5e2 <- function(predictors, parameter_draws, downsample = 50){
+  samples <- sample(seq_along(parameter_draws$lp__), downsample)
+  predictions = apply(predictors, MARGIN = 1, FUN = function(X) exp(parameter_draws$log_a0[samples,X[1]] + parameter_draws$r[samples, X[1]] * log(X[3]) + parameter_draws$c[samples, X[1]] * (log(X[2]) - log(parameter_draws$b[samples, X[1]]) + (1 - X[2]/parameter_draws$b[samples, X[1]])))) %>% # X[1] = predictor species, X[2] = predictor dist, X[3] = predictor Exp
+    t() %>% 
+    as.data.frame() %>% 
+    bind_cols(predictors) %>% 
+    mutate(Vmean = apply(predictors, MARGIN = 1, FUN = function(X) exp(mean(parameter_draws$log_a0[,X[1]]) + mean(parameter_draws$r[, X[1]]) * log(X[3]) + mean(parameter_draws$c[, X[1]]) * (log(X[2]) - log(mean(parameter_draws$b[, X[1]])) + (1 - X[2]/mean(parameter_draws$b[, X[1]])))))) %>% 
+    pivot_longer(contains("V"), values_to = "Pred", names_to = "Sample") %>% 
+    mutate(Sample = gsub("V", "", Sample))
+  
+  predictions$Sample[predictions$Sample != "mean"] <- samples[as.numeric(predictions$Sample[predictions$Sample != "mean"])] #replace prediction number with the number of the posterior sample from which it was drawn
+    
+  return(predictions)
+}
+
+posterior_predictions_m5e2 <- get_expectation_m5e2(predictors, model5e2_draws) %>% 
+  mutate(Species = c("Ateles.geoffroyi", "Cebus.capucinus", "Nasua.narica",  "Potos.flavus")[Species])
+```
+
+```{r, advanced-data-viz1}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+species_pal <- viridis_pal(begin = 0.2, end = 0.8)(4)
+
+model0e2Data %>% filter(transitExp < 10) %>% ggplot() +
+  geom_point(aes(x = as.numeric(D)/1000, y = (as.numeric(length) - as.numeric(D))/1000, col = Species), alpha = 0.1, shape = 16, size = 0.8) +
+  geom_line(data = filter(posterior_predictions_m5e2, Sample == "mean", transitExp < 10), aes(x = dist, y = Pred, col = Species, group = Species)) +
+  facet_grid(rows = vars(factor(transitExp))) +
+  scale_color_discrete(type = species_pal) +
+  ylim(c(0,1.5)) +
+  theme_classic()
+```
+
+```{r, advanced-data-viz2}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+ggplot() +
+  #geom_point(aes(x = as.numeric(D)/1000, y = (as.numeric(length) - as.numeric(D))/1000, col = transitExp), alpha = 0.1, shape = 16, size = 0.8) +
+  geom_line(data = filter(posterior_predictions_m5e2, Sample == "mean"), aes(x = dist, y = Pred, col = transitExp, group = transitExp), linewidth = 0.5) +
+  facet_wrap(~Species) +
+  scale_color_continuous(type = "viridis") +
+  theme_classic()
+```
+
+```{r, advanced-data-viz3}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+ggplot() +
+  #geom_point(aes(x = as.numeric(D)/1000, y = (as.numeric(length) - as.numeric(D))/1000, col = transitExp), alpha = 0.1, shape = 16, size = 0.8) +
+  #geom_line(data = filter(posterior_predictions_m5e2, Sample == "mean"), aes(x = dist, y = Pred, col = transitExp, group = transitExp), linewidth = 1) +
+  geom_line(data = filter(posterior_predictions_m5e2, Sample != "mean"), aes(x = dist, y = Pred, col = transitExp, group = interaction(Sample, factor(transitExp))), alpha = 0.05) +
+  facet_wrap(~Species) +
+  scale_color_continuous(type = "viridis") +
+  theme_classic()
+```
+
+# Model 6 - Individual effects a
+
+```{r model6e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model6e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  Exp = model0e2Data$transitExp,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]),
+  nID = length(unique(model0e2Data$individual.local.identifier)),
+  ID = as.numeric(factor(model0e2Data$individual.local.identifier))
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model6e2_fit <- stan(file = "model6e2.stan", 
+                   data = model6e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model6e2_fit, file = "../results/model6e2_fit")
+
+```
+
+```{r model6e2-diagnostics}
+load(file = "../results/model6e2_fit")
+traceplot(model6e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+pairs(model6e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+summary(model6e2_fit, pars = c("log_a0", "r", "b", "c"))$summary
+
+```
+
+```{r model6e2-posteriors}
+
+model6e2_draws <- rstan::extract(model6e2_fit)
+
+
+model6e2_draws[!(names(model6e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__ & !contains("b") & !contains("ID")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+```{r model6e2-residuals}
+model6e2_predictions <- data.frame(delta_length_hat_mean = apply(model6e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model6e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model6e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model6e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model6e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model6e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model6e2_predictions %>% ggplot(aes(x = as.numeric(model6e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model6e2_predictions$pearson_resid_mean)
+
+sum(model6e2_predictions$pearson_resid_mean ^2)/nrow(model6e2_predictions)
+
+```
+
+# Model 7 - Individual effects learning rate
+
+```{r model7e2-Persson}
+species_key <- read.csv("../DATA/processed/species-key.csv", stringsAsFactors = TRUE)
+
+model7e2Data_Stan <- list(
+  N = nrow(model0e2Data),
+  delta_length = (as.numeric(model0e2Data$length) - as.numeric(model0e2Data$D))/1000, #scale to km
+  dist = as.numeric(model0e2Data$D)/1000,
+  Exp = model0e2Data$transitExp,
+  nSp = length(levels(species_key$individual.taxon.canonical.name)),
+  Sp = as.numeric(species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]),
+  nID = length(unique(model0e2Data$individual.local.identifier)),
+  ID = as.numeric(factor(model0e2Data$individual.local.identifier))
+)
+```
+
+```{r, eval = FALSE}
+options(mc.cores = parallel::detectCores())
+model7e2_fit <- stan(file = "model7e2.stan", 
+                   data = model7e2Data_Stan,
+                   chains = 4,
+                   iter = 400,
+                   warmup = 200)
+
+save(model7e2_fit, file = "../results/model7e2_fit")
+
+```
+
+```{r model7e2-diagnostics}
+load(file = "../results/model7e2_fit")
+traceplot(model7e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+pairs(model7e2_fit, pars = c("log_a0", "r", "b", "c", "alpha", "lp__"))
+summary(model7e2_fit, pars = c("log_a0", "r", "b", "c"))$summary
+```
+
+```{r}
+pairs(model7e2_fit, pars = c("r", "r_ID[1]", "r_ID[2]", "r_ID[3]", "r_ID[4]"))
+```
+
+```{r model7e2-posteriors}
+
+model7e2_draws <- rstan::extract(model7e2_fit)
+
+#write down marginlization math with Mark!
+model7e2_draws$r_marg <- model7e2_draws$r + matrix(c(model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 1] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 2] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 3] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$r_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 4] %>% apply(MARGIN = 1, mean)), 
+                                                   nrow = nrow(model7e2_draws$r_ID), ncol = 4, byrow = FALSE)
+
+model7e2_draws$log_a_marg <- model7e2_draws$log_a0 + matrix(c(model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 1] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 2] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 3] %>% apply(MARGIN = 1, mean),
+                                                     model7e2_draws$a_ID[, as.numeric(species_key$individual.taxon.canonical.name) == 4] %>% apply(MARGIN = 1, mean)), 
+                                                   nrow = nrow(model7e2_draws$a_ID), ncol = 4, byrow = FALSE)
+
+
+model7e2_draws[!(names(model7e2_draws) %in% c("pearson_resid", "delta_length_hat"))] %>% as.data.frame() %>% dplyr::select(!lp__ & !contains("b") & !contains("ID")) %>% pivot_longer(everything(), values_to = "Estimate", names_to = "Variable") %>% 
+  ggplot() + geom_density_ridges(aes(x = Estimate, y = Variable))
+
+```
+
+```{r}
+pairs(model7e2_fit, pars = c("log_a0", "b"))
+```
+
+```{r model7e2-residuals}
+model7e2_predictions <- data.frame(delta_length_hat_mean = apply(model7e2_draws$delta_length_hat, MARGIN = 2, mean), 
+                                  delta_length_hat_sd = apply(model7e2_draws$delta_length_hat, MARGIN = 2, sd),
+                                  pearson_resid_mean = apply(model7e2_draws$pearson_resid, MARGIN = 2, mean), 
+                                  pearson_resid_sd = apply(model7e2_draws$pearson_resid, MARGIN = 2, sd))
+
+model7e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+model7e2_predictions %>% ggplot(aes(x = delta_length_hat_mean, y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic() + ylim(-1,5)
+
+model7e2_predictions %>% ggplot(aes(x = as.numeric(model7e2Data_Stan$dist), y = pearson_resid_mean)) + geom_point(alpha = 0.02, shape = 16) + geom_smooth() +
+  theme_classic()
+
+
+
+summary(model7e2_predictions$pearson_resid_mean)
+
+sum(model7e2_predictions$pearson_resid_mean ^2)/nrow(model7e2_predictions)
+
+```
+
+```{r, posterior_predictions_m7e2}
+predictors = list(Species = 1:4, dist = seq(0,max(model7e2Data_Stan$dist), by = 0.05), transitExp = 1:max(model7e2Data_Stan$Exp)) %>% # list of predictor levels
+  expand.grid() #all predictor combinations
+
+get_expectation_m7e2 <- function(predictors, parameter_draws, downsample = 50){
+  samples <- sample(seq_along(parameter_draws$lp__), downsample)
+  #Get predictions from a sample of the posterior
+  predictions = apply(predictors, MARGIN = 1, FUN = function(X) exp(parameter_draws$log_a_marg[samples,X[1]] + parameter_draws$r_marg[samples, X[1]] * log(X[3]) + parameter_draws$c[samples, X[1]] * (log(X[2]) - log(parameter_draws$b[samples, X[1]]) + (1 - X[2]/parameter_draws$b[samples, X[1]])))) %>% # X[1] = predictor species, X[2] = predictor dist, X[3] = predictor Exp
+    t() %>% 
+    as.data.frame() %>% 
+    bind_cols(predictors) %>% 
+    #get predictions from the mean of posterior parameter distributions
+    mutate(Vmean = apply(predictors, MARGIN = 1, FUN = function(X) exp(mean(parameter_draws$log_a_marg[,X[1]]) + mean(parameter_draws$r_marg[, X[1]]) * log(X[3]) + mean(parameter_draws$c[, X[1]]) * (log(X[2]) - log(mean(parameter_draws$b[, X[1]])) + (1 - X[2]/mean(parameter_draws$b[, X[1]])))))) %>% 
+    pivot_longer(contains("V"), values_to = "Pred", names_to = "Sample") %>% 
+    mutate(Sample = gsub("V", "", Sample))
+  
+  predictions$Sample[predictions$Sample != "mean"] <- samples[as.numeric(predictions$Sample[predictions$Sample != "mean"])] #replace prediction number with the number of the posterior sample from which it was drawn
+    
+  return(predictions)
+}
+
+posterior_predictions_m7e2 <- get_expectation_m7e2(predictors, model7e2_draws) %>% 
+  mutate(Species = c("Ateles.geoffroyi", "Cebus.capucinus", "Nasua.narica",  "Potos.flavus")[Species])
+```
+
+```{r, advanced-data-viz1-m7e2}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+species_pal <- viridis_pal(begin = 0.2, end = 0.8)(4)
+
+model0e2Data %>% filter(transitExp < 10) %>% ggplot() +
+  geom_point(aes(x = as.numeric(D)/1000, y = (as.numeric(length) - as.numeric(D))/1000, col = Species), alpha = 0.1, shape = 16, size = 0.8) +
+  geom_line(data = filter(posterior_predictions_m7e2, Sample == "mean", transitExp < 10), aes(x = dist, y = Pred, col = Species, group = Species)) +
+  facet_grid(rows = vars(factor(transitExp))) +
+  scale_color_discrete(type = species_pal) +
+  ylim(c(0,1.5)) +
+  theme_classic()
+```
+
+```{r, advanced-data-viz2-m7e2}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+ggplot() +
+  geom_point(data = model0e2Data, aes(x = as.numeric(D)/1000, y = (as.numeric(length) - as.numeric(D))/1000), alpha = 0.05, shape = 16, size = 0.8) +
+  geom_line(data = filter(posterior_predictions_m7e2, Sample == "mean"), aes(x = dist, y = Pred, col = transitExp, group = transitExp), linewidth = 0.5) +
+  facet_wrap(~Species) +
+  scale_color_continuous(type = "viridis") +
+  ylim(c(0,1.5)) +
+  theme_classic()
+```
+
+```{r, advanced-data-viz3-m7e2}
+model0e2Data$Species <- species_key$individual.taxon.canonical.name[match(model0e2Data$individual.local.identifier, species_key$individual.local.identifier)]
+
+ggplot() +
+  #geom_point(aes(x = as.numeric(D)/1000, y = (as.numeric(length) - as.numeric(D))/1000, col = transitExp), alpha = 0.1, shape = 16, size = 0.8) +
+  #geom_line(data = filter(posterior_predictions_m7e2, Sample == "mean"), aes(x = dist, y = Pred, col = transitExp, group = transitExp), linewidth = 1) +
+  geom_line(data = filter(posterior_predictions_m7e2, Sample != "mean"), aes(x = dist, y = Pred, col = transitExp, group = interaction(Sample, factor(transitExp))), alpha = 0.05) +
+  facet_wrap(~Species) +
+  scale_color_continuous(type = "viridis") +
+  theme_classic()
+```

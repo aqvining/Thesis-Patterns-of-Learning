@@ -1,0 +1,1839 @@
+---
+title: "The Movement and Behavior of Kinkajous Within a Dynamic Foraging Hotspot"
+author: "Alexander Q. Vining, Chase L. Núñez, Nele Stockmeyer, Margaret C. Crofoot"
+
+date: "Add Afilliations Here"
+output:
+  pdf_document: default
+  word_document: default
+tables: true
+csl: ecology.csl
+#bibliography: bib/references2.json
+---
+
+```{r setup, include=FALSE}
+library(stringr)
+library(readr)
+library(tidyr)
+library(lubridate)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(gplots)
+library(ggridges)
+library(scales)
+library(corrplot)
+library(units)
+library(rethinking)
+library(bayesplot)
+library(tidybayes)
+library(tidybayes.rethinking)
+library(tibble)
+library(ggforce)
+library(purrr)
+library(kableExtra)
+library(modelr)
+library(grid)
+
+#Load entropy calculation tools
+source("..\\CODE\\Sequence Analysis\\LOOK.R")
+source("..\\CODE\\Sequence Analysis\\simp.R")
+source("..\\CODE\\Sequence Analysis\\infoLines.R")
+source("..\\CODE\\Sequence Analysis\\infoLines_inser_del.R")
+source("..\\CODE\\Sequence Analysis\\group.R")
+source("..\\CODE\\Sequence Analysis\\group_first.R")
+source("..\\CODE\\Sequence Analysis\\infoLines_subMAT.R")
+source("..\\CODE\\Sequence Analysis\\simp_subMAT.R")
+source("..\\CODE\\Sequence Analysis\\inclusion.R")
+source("..\\CODE\\Sequence Analysis\\incl_test.R")
+source("..\\CODE\\Sequence Analysis\\draw_probPlot.R")
+source("..\\CODE\\Sequence Analysis\\draw_seq.R")
+source("..\\CODE\\Sequence Analysis\\entropy.R")
+source("..\\CODE\\Sequence Analysis\\AutoO.R")
+```
+
+```{r load-processed-data, include = FALSE}
+#This code chunk assumes all the data processing steps below have already been run and saved and will not be evaluated in the creation of this document. If simulations or data processing are being rerun for any reason, a duplicate of this code chunk exists in the proper place for which EVAL can be set to true
+load(file = "../DATA/processed/flower_counts_region.Rdata")
+load(file = "../DATA/processed/flower_counts.Rdata")
+load(file = "../data/processed/transition_arrays.Rdata")
+load(file = "../DATA/processed/combined_data_region.Rdata")
+load(file = "../DATA/processed/combined_sim_data_region.Rdata")
+all_kinkajou_scans <- read.csv("../DATA/processed/all_kinkajou_scans.csv")  %>% mutate(timestamp = as.POSIXct(timestamp, tz = "America/Panama"))
+all_kinkajou_scans_long <- read.csv("../DATA/processed/all_kinkajou_scans_long.csv")[,-1] %>% mutate(timestamp = as.POSIXct(timestamp, tz = "America/Panama"))
+```
+
+```{r helper_functions, include=FALSE}
+get_study_day_and_time <- function(Datetime_string, study_start) {
+  #study start must include the approximate start time of evening observations if overnight follows are to be binned into the correct study day
+  datetime_vector <- strsplit(Datetime_string, split = "")[[1]]
+  date1 <- paste(paste(datetime_vector[1:6], collapse = ""), 
+                "20", 
+                paste(datetime_vector[7:8], collapse = ""), sep = "") %>% as.POSIXct(format = "%d-%m-%Y", tz = "America/Panama")
+  time1 = paste(datetime_vector[9:10], collapse = "")
+  study_day = difftime(date1, study_start, units = "days") %>% floor()
+  return(list(study_day, time1))
+}
+
+get_kinkMinutesPerHour <- function(count_data, categories = 6) {
+  #default value for categories assumes count data has 6 rows per observational minute, representing 3 Regions x 2 states (hidden or visible)
+  minutes_per_hour = (sum(count_data)/(length(count_data)/categories)) * 60
+  return(minutes_per_hour)
+}
+
+get_growth_index <- function(time_series) {
+  removed = 0
+  while(time_series[1] == 0) {
+    time_series <- time_series[-1]
+    warning("initial observation removed due to value of 0")
+    removed = removed + 1
+  }
+  growth_index <- ((time_series-time_series[1])/time_series[1]) * 100
+  return(c(rep(NA, times = removed), growth_index))
+}
+
+get_decision_info <- function(transition_array, flower_data, kinkajou_counts){
+  # input:
+    #transition_array: an array with regions transitioned from in one dimension, regions transitioned to in the second, and time in the third, where each cell gives the number of transitions that occurred from region x to region y at time t
+    #flower_data: a dataframe with columns Adjusted_Count and Region. Should only contains data from a single study night
+    #kinkajou_counts: a dataframe with columns "timestamp", "Region1_total", "Region2_total", and "Region3_total". Should only contain data from a single study night
+  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                                                                                                                                                                                             1,0,1,0,                                                                       
+                                                                                             1,1,0,0,
+                                                                                             0,0,0,0),nrow = 4, ncol = 4)} ) %>%#this matrix is multiplied with a transition matrix to remove all transitions that are not from one region to a different region
+    array(dim = dim(transition_array))
+  
+  kinkajou_counts <- kinkajou_counts %>% relocate("Region1_total", "Region2_total", "Region3_total", "timestamp") #order columns so region columns can be indexed by the corresponding region integer
+  
+  if (sum(decision_transitions) <= 0) return(data.frame(matrix(ncol = 7, nrow = 0))) #if there are no decisions, returns a placeholder dataframe with 7 columns and 0 rows. Done to fit with the final form of the decision data.frame with columns for From, To, Minute, adj_flowers_to, Avoid, adj_flowers_avoid, and Study_night)
+  #extract information about each decision in array
+  decisions <- as.data.frame(which(decision_transitions > 0, arr.ind = TRUE)) #get array indices for all decisions
+  #below, duplicate any rows where the same decision was made more than once in a minute
+  decisions <- data.frame(lapply(X = decisions, 
+                                 FUN = rep, 
+                                 times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = decisions$dim1, dim2=decisions$dim2, dim3=decisions$dim3, MoreArgs = list(data = decision_transitions))))
+  names(decisions) <- c("From", "To", "Minute")
+  decisions <- mutate(decisions, 
+                      relative_density_to = arrange(flower_data, Region)$Relative_Density[To], #get the relative flower density of the region moved to for each decision.
+                      expected_rel_dens_to = arrange(flower_data, Region)$Expected_Relative_Density[To],
+                      kink_count_to = as.matrix(kinkajou_counts[,1:3])[cbind(Minute,To)],
+                      Avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
+  )
+  decisions <- mutate(decisions, relative_density_avoid = arrange(flower_data, Region)$Relative_Density[Avoid],
+                      expected_rel_dens_avoid = arrange(flower_data, Region)$Expected_Relative_Density[Avoid],
+                      kink_count_avoid = as.matrix(kinkajou_counts[, 1:3])[cbind(Minute,Avoid)])
+  return(decisions)
+}
+
+"%||%" <- function(a, b) {
+  if (!is.null(a)) a else b
+}
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+## Abstract
+
+Within the *Procyonidae* family, three lineages (kinkajous, olingos, and ringtails) have independently evolved to become highly arboreal, nocturnal, and fruit dependent (frugivorous) - despite their membership in the Order *Carnivora*. Reliance on fruit is hypothesized to select for behavioral flexibility mediated by cognitive mechanisms such as episodic memory and topological mental mapping. This hypothesis arises because the semi-predictable patterns of fruit production is patchy, and requires extensive environmental knowledge to exploit effectively. Little is known, about how the shift to frugivory has affected the cognitive evolution and foraging patterns of Procyonids, however. In this study, we analyze the movement and behavior of the most strictly frugivorous of the *Procyonidae*, kinkajous (*Potos flavus*), within a large balsa (*Pyramidale ochroma*) crown. Balsa trees produce large flowers that open for one night, generate large quantities of nectar, and then fall off the tree - creating a high value resource patch with internal structure that changes every night. Our goal was to determine the contexts in which kinkajou movements responded to the distribution of balsa flowers, and the types of learning and memory necessary for such a response to be possible. We find that patterns of kinkajou movements between major regions of this tree crown did not vary with the changing distribution of flowers, but kinkajou movements do reflect a tendency to sample different regions and stay longer where flowers are denser. We also find that kinkajous frequently co-forage within the tree, showing increased levels of movement when other kinkajous are present. These results suggest that foraging hotspots may act as social hubs for otherwise solitary kinkajous - despite competitive dynamics. We discuss the implications of these findings for understanding kinkajou cognition at different ecological scales.
+
+## Introduction
+
+Intelligence, by one definition, is the ability to accurately predict the state of the world at some future point in time. Organisms are often deemed more intelligent when they anticipate conditions and outcomes further into the future, or by using knowledge of multiple, interacting processes [@decker2016; @redshaw2020]. Social intelligence is often differentiated from ecological intelligence, with ongoing debate as to the consequences natural selection in either domain has on other types of cognitive performance [@ashton2018; @rosati2017]. Ecological and social hypotheses for the origins of animal intelligence both posit that the ability to understand the nature of multiple, interacting relationships provides fitness benefits to an animal. In the case of ecological intelligence, the relationships in question are physical rather than social (e.g. the spatial relations between patches, the temporal relations between productive periods, the causal relations between rainfall and phenology). Understanding such environmental relationships provides animals a means of directing their movements between highly productive patches, which is more energy efficient than random search foraging and presumed to carry fitness benefits when patches are sparsely distributed [@boyer2010]. 
+
+Fruit is one type of resource that is often distributed this way, leading to the hypothesis that more selective foragers (i.e. those that eschew leaves and other hard-to-digest, easy-to-find energy sources in favor of high-energy fruits) have evolved greater intelligence [@milton1981]. This hypothesis is supported by phylogenetic analysis of primate and bird brain sizes with regard to degree of frugivory [@decasien2017; @hardie2023; but see also @powell2017a] and by the performance of both primates and birds that rely on sparsely distributed food patches on multiple cognitive tests [@malsburg2020]. Neither of these approaches, however, directly measures an animal's understanding of environmental relationships; they provide only indirect support of the ecological intelligence hypothesis.  
+
+Increasingly, behavioral ecologists are using technological advances in animal telemetry and remote environmental sensing to analyze animal movements across different types of landscapes, such as energy, risk, and information [@williams2021]. This approach allows animal decision making to be studied as a sequential process that is organized hierarchically across multiple spatial and temporal scales - context that is missing from standard laboratory studies of cognition [@stephens2008]. However, determining the relevant scales of animal decision making in natural contexts and collecting appropriate multi-scale data remains a challenging and rarely achieved goal [@kay2017]. Recent examples have highlighted species that both live in complex social groups and depend on dynamic resource distributions like fruit or watering holes [@presotto2019a, elephants; @toledo2020, fruit bats; @trapanese2022, macaques and capuchins]. There is an opportunity for studies of ecological decision making to enhance our understanding of the relationship between ecological and social intelligence by applying this approach to species that selectively forage on sparsely distributed, high yield resources, but do not live in large, complex social groups.
+
+The *Carnivora* Order is a compelling place to begin this work, given that social carnivores exhibit the same markers of intelligence as social primates, but do not meaningfully diverge from solitary carnivores in terms of relative brain size [@holekamp2017]. Kinkajous (*Potos flavus*) are particularly interesting in this context, as they have evolved over the last 24 million years (approximately) from an omnivorous, terrestrial ancestor into a highly specialized arboreal frugivore [@koepfli2007]. We thus predict that they are skilled learners of environmental relationships. Because kinkajous live in small social groups and typically forage alone [@kays2001], comparing their understanding of environmental relationships to that of more social animals will help distinguish the roles of diet and sociality in cognitive evolution. 
+
+Kinkajous often consume the nectar of balsa flowers (*Pyramidale ochroma*), which are clustered across multiple spatial scales and thus provide an excellent system for studying kinkajou decision making. Balsa flowers typically open around 17:00 hours with already-high volumes of nectar, continue producing diminishing volumes of nectar through the night, and fall off the tree with a day or two [@kays2012]. Thus, within tree crowns, the concentration of nectar in patches of large flowers is analagous to that of the inflorescences exploited by bees and hummingbirds; a system that has been used extensively to study learning mechanisms in these species [@vanderkooi2021]. At larger scales, balsa trees are wind-dispersed pioneer specialists that grow best in forest gaps and disturbed areas, resulting in highly patchy spatial distributions [@aikman1955]. In this study, we begin the work of investigating the degree to which kinkajou movement decisions reflect an understanding of the environmental relationships that define the distribution of balsa nectar.
+
+### Kinkajou Socio-Ecology
+
+Kinkajous are highly adapted to a diet of fruit and nectar, which make up 90-100% of a kinkajou's diet [@julien-laferriere1999; @kays1999a]. Like platyrrhines (New World monkeys), kinkajous have moderate body sizes (2-5 kilograms), prehensile tails, grasping paws, alternating diagonal gaits, and visual sensitivity to brightness contrasts [@chausseil1992], all of which aid in finding and accessing hard-to-reach fruit in the canopy. Compared to their *Carnivoran* relatives, kinkajous also have shortened snouts, flattened molar dentition, and squared jaws for processing fruit [@ford1988]. Kinkajous do not appear to specialize on any one food source, however; they exploit a rich variety of fruit and nectar sources across their broad range (much of Central and South America) [@nascimento2017; @julien-laferriere1999; @kays1999a], with some evidence of population differences in food preferences [@seguigne2022]. The selectivity and diversity of kinkajous' diets suggests they are promising candidates for the study of ecological intelligence, but as of yet there exists little data that can elucidate their cognitive flexibility or predictive ability.
+
+Another advantage of studying the foraging of kinkajous is that they are largely solitary [@julien-laferriere1993]. Social groups consisting of one adult female, one or two adult males, and two juveniles have been found associating at sleep sites and in large foraging trees during up to 10% of their active hours, but kinkajous nearly always travel alone [@kays2001]. Kinkajous are, however, known to be quite vocal and frequently scent-mark using specialized glands on their cheeks, throat, and abdomen [@ford1988; @kays1999a]. It is possible that kinkajous maintain nuanced social relationships with their neighbors mediated through channels of communication that remain invisible to us. Further uncovering the social relationships of kinkajous remains an intriguing line of research. At the same time, the solitary nature of kinkajous' travel between foraging locations suggests decisions about where to forage are made largely independently, meaning it is safer (relative to primates) to assume kinkajous travel where they want to go, and not where other individuals want to go. Kinkajous thus make an excellent species for studying decision making in dynamic, challenging foraging environments.
+
+Recent work revealed that kinkajous' transits between foraging locations tend to exhibit higher "pathiness" (i.e. occur along the same route) than those of other sympatric frugivores [@alavi2022]. Kinkajous' nocturnality may be a contributing factor here; while diurnal frugivores can use distant landmarks to orient toward foraging locations, kinkajous are likely limited perceptually to local landmarks and thus become more dependent on learned routes. Determining the extent to which kinkajous use their route-networks flexibly to plan visits to highly productive trees, rather than relying on fixed patterns of visitation between foraging sites, will require the study of kinkajou movements relative to the changes in resource distribution in their home ranges. A complete picture of kinkajou decision making requires this work to be done at multiple scales, such that the decision making heuristics used to navigate local, perceptually available resource distributions can be used to contextualize decisions made at home-range scales.
+
+### The Kinkajou-Balsa Mutualism
+
+Balsa trees (*Pyramidale ochroma*) are an important food resource for kinkajous, and one that provides opportunities to study kinkajou decision making at multiple scales. During their flowering period, each of a balsa tree's large flowers can produce around 22mL of nectar a night [@kays2012]. These flowers open around dusk and fall off 24-48 hours later. The timing and quantity of nectar production suggest balsas are specifically soliciting larger bodied, nocturnal pollinators [@lynncarpenter1978]. Indeed, over 126 nights of observation across three balsa trees, 25 mammalian and bird species were observed visiting. Kinkajous were the most frequently observed species [@kays2012]. 
+
+Whether kinkajous and balsa have specifically co-adapted to each other is not known, but we put forth a few hypotheses for why this could be a likely scenario. From the kinkajous' perspective, balsas in lowland tropical rainforests tend to flower during the transition from wet season to dry season, a period on Barro Colorado Island when fruit availability is typically very low [@foster1982ecology]. Thus, balsa nectar may be an essential "fallback food", sustaining kinkajous when their primary food source is scarce. From the balsa's point of view, kinkajous may be especially effective for cross-pollinating between balsa stands. Kinkajous use their long tongues to drink nectar from the flowers, streaking pollen across their faces in the process. Additionally, balsa most often occur in isolated patches where treefalls or other disturbances have occurred [@aikman1955]; therefore, cross-pollination between these patches requires that pollinators travel long-distances over short period of times. Pollination efficiency would be increased if pollinators moved between stands along direct routes. Pollination efficiency could be further increased if pollinators selectively moved between actively flowering crowns by making flexible, predictive foraging decisions, as we predict that kinkajous do.
+
+Finally, the importance of balsa trees for kinkajous may extend beyond foraging gains. As hotspots of activity, balsa trees may also serve as important social hubs for kinkajous. A clearer picture of kinkajous' social relationships, and the impacts these may have on their movements, can be gained by observing the nature of kinkajous' interactions during co-foraging.
+
+### Defining and Measuring Intelligence Through Foraging Decisions 
+
+Foraging presents animals with a hierarchy of decisions about when to forage, where, and for how long. These decisions require an animal to balance what it can perceive in its local environment, the properties of the environment that it has learned, and the consequences of each decision on future possibilities [@stephens2008]. Animals are expected to make decisions that minimize their risk of acquiring insufficient energy (often best achieved by maximizing energy intake), but are limited in their ability to make optimal decisions by what they know about the properties of their environment [@pyke1984]. Thus, the divergence of animal decisions from optimal decisions can reveal what the animal has learned.
+
+Within individual balsa crowns, the nightly turnover of flowers creates a sort of natural experiment, in which optimal paths through the crown vary each night. Thus, we are able to test whether kinkajous attend to changing resource distributions at a local scale, and flexibly navigate the tree crown by changing their travel route to optimize their foraging success on a night to night basis. Within the balsa crown, it is possible that kinkajous (a) assess flower distributions perceptually (likely by smell), (b) utilize learned behavioral routines to efficiently exploit average flowering patters, and/or (c) monitor changing flower distributions - using recent experience and knowledge of relationships in flowering patterns between regions of the tree to selectively exploit areas predicted to be most productive. Testing between these possibilities is therefore a good way to begin understanding kinkajou decision making.
+
+
+### Hypothises and Predictions
+
+In this study, we conducted observations of a single balsa tree. We collected data on the distribution of flowers within the tree crown each night, and minute-by-minute data on the distribution of kinkajous in the crown over four hour periods. By pairing these data, we aimed to test several hypotheses regarding the ways kinkajous respond to changing resource distributions at a local scale (Table 1).
+
+First, under the hypothesis that animals will selectively forage in areas with above-average energy returns [@charnov1976], we predicted that kinkajous would spend more time in regions of the tree crown with greater flower density. We then tested two alternative hypotheses of how kinkajous decide to move between different regions of the tree against a null hypothesis of random movement: A) kinkajous assess, perceptually, which regions have the greatest density of flowers and B) kinkajous predict which regions of the tree will have the greatest density of flowers using information obtained on previous nights. 
+
+Next, we considered the role of social bonds on kinkajou behavior while foraging in the balsa crown. We tested the additional hypothesis that kinkajous avoid direct foraging competition by foraging in separate regions of the tree against the hypothesis that kinkajous use time in the balsa tree for physical means of social bonding such as grooming.
+
+Lastly, we considered how working memory might influence kinkajou foraging decisions, hypothesizing that kinkajous will avoid foraging in regions they have recently visited (and likely depleted).
+
+```{r Hypothesis-Table, echo = FALSE, warning = FALSE}
+table1data = data.frame(Hypothesis = c("1) Kinkajous prefer to forage in regions with greater flower density",
+                                       "1) Kinkajous prefer to forage in regions with greater flower density",
+                                       "2A) Kinkajous perceptually assess the density of flowers across the tree crown when deciding where to go",
+                                       "2A) Kinkajous perceptually assess the density of flowers across the tree crown when deciding where to go",
+                                       "2B) Kinkajous predict which regions will have more flowers using information obtained from foraging on previous nights",
+                                       "2B) Kinkajous predict which regions will have more flowers using information obtained from foraging on previous nights",
+                                       "3) While in the tree, kinkajous avoid direct foraging competition",
+                                       "3) While in the tree, kinkajous avoid direct foraging competition",
+                                       "4) Kinkajous remember where they have been, and avoid foraging in recently depleted regions"),
+                        Prediction = c("Kinkajous spend more time in the tree when there are more flowers",
+                                       "Kinkajous spend more time in regions of the crown that have greater flower density",
+                                       "When moving between regions, kinkajous tend to select the region with greater flower density",
+                                       "The difference in flower density between regions is positively associated with the probability a kinkajou moves into the higher density region",
+                                       "When moving between regions, kinkajous tend to select the region that has historically had greater flower density",
+                                       "The difference in average previous flower density between regions is possitively associated with the probability that a kinkajou moves into the higher density region",
+                                       "Kinkajous are more likely to depart a tree region when there are other kinkajous in that region",
+                                       "When moving between regions, kinkajous are more likely to enter the region with the fewest other kinkajous",
+                                       "The order of minimum conditional entropy in sequences of region visits is > 1"),
+                        Statistical.Support = c("Negative", "Weak", "None", "None", "None", "None", "Strong", "None", "Weak"))
+kable(table1data, format = "latex", col.names = gsub("[.]", " ", names(table1data)), caption = "Hypotheses and Predictions") %>% column_spec(1:2, width = "7cm") %>% column_spec(3, "1.5cm") # %>% collapse_rows(columns = 1)
+
+```
+
+## Methods
+
+### Study Site
+
+Data were collected on Barro Colorado Island (BCI), Panama. BCI is a 15.6 km² island with semi-deciduous lowland tropical forest. The wet and dry seasons on BCI are very distinct, where approximately 90% of an average annual 2600mm rainfall occurs between May and December [@dietrich1982geology]. We observed a single balsa tree beginning December 14, 2019 until January 26, 2020. This is a period of transition from the wet to dry season during which there is little fruit production on BCI [@wright1999]. The tree under observation grows from the forest edge over a clearing made for a residential building within the Smithsonian Tropical Research Institute Biological Research Station. As a result, this tree crown has grown very large and is the only tree crown connecting two forest segments. Consequently, there is direct visual access to the tree crown from above, below, and from three sides. A steep hill to the west of the tree provides an eye-level view into the tree crown. 
+
+### Behavioral Observations and Thermal Videography
+
+We conducted behavioral observations and thermal videography for four hour periods over most nights of the study period. Prior to the observation, the tree achitecture was diagrammed and each limb out to three branches (forks) from the trunk was given a unique label. During observations, we audio dictated branch-to-branch movements of kinkajous and opportunistically noted other interesting behaviors using the Animal Observer app. In addition, scan samples were recorded in the app every 15 minutes, with data taken on the behavior of each kinkajou in the tree (ethogram: resting, moving, foraging, not visible) and the branch on which it resided.
+
+During each observation period, we used FLIR t1020 cameras to collect thermal video from two perspectives: an East-facing angle into the tree crown from an adjacent hilltop (Figure 1A), and an upward facing angle from below the tree crown. Because it was not possible for a single observer to live-track the movements of all kinkajous in the tree crown, these videos were used to collect data on kinkajou locations within the tree at every minute. However, compression of the three dimensional crown area into two dimensions often made the identification of specific branches impossible. Thus, we used the diagram of the tree architecture to hand-draw three semi-distinct regions (Front, Top, and Back; labelled 1, 2, and 3, respectively) that could be distinguished from both a side view (thermal video, Figure 1A) and an aerial view (drone images of flowers, Figure 1B). Thermal videos were converted from raw .seq format to .mp4 files using FLIR Thermal Studio Pro. All videos were intitially converted using a scale minimum of 20.0$^\circ$ C, a scale maximum of 28.0$^\circ$ C, and an isotherm at 28.3$^\circ$ C. In most cases, these settings highlighted kinkajous in green, against greyscale thermal imagery; conversion settings were adjusted for individual videos to achieve this effect where conditions required. Due to small discrepancies in the frame-rate recorded in video metadata and the actual number of frames collected per second, video conversion resulted in time dilation/expansion that over a full four hour period could add up to several minutes. To account for the discrepancy between converted video length and video length in the raw metadata, four second breaks were inserted at regular intervals of the videos using iMOVIE. This prevented the synchronization of the two video feeds, and only the side view of the full tree was used for further analysis. We then used the ProCreate software to trace region outlines on the first frame of every video, and iMovie to overlay these traces across the full videos.
+
+\begin{figure}[htbp]
+\centering
+\setlength{\fboxsep}{0pt}
+\setlength{\fboxrule}{1pt}
+\fbox{\includegraphics[width=\linewidth]{Figure_1.jpg}}
+\caption[Data collection methods]{ (A) Still frame from thermal video recorded on December 30, 2019. Colored lines denote the three regions, and have been redrawn over the original image for visual clarity in print. An isotherm was used during video conversion to set recorded temperatures above 84 F to green, making kinkajous easily identifiable, as with the kinkajou visible inside Region 3 (Panel D). (B) Orthomosaic image of drone photos from December 30, 2019, with region shapes (black outlines) and geo-referenced upright-flower annotations (circles) added in QGIS. Panel C zooms in on a region of the orthomosaic with two upright flowers.
+\label{fig1}}
+\end{figure}
+
+
+We used the resulting videos to record how many kinkajous were in each region of the tree crown at each minute of the video. For parts of the videos when there was no kinkajou movement, the video was fast forwarded up to 10 times speed. When there were several kinkajous in the tree moving simultaneously, the video was slowed down to the original speed and reviewed as necessary. Because Region 3 largely occurs within and behind Region 1 in the videos, we used our best judgement to determine when (a) a kinkajou was inside the Region 3 trace, but had not in reality left Region 1 and (b) when kinkajous were hidden from view but had not left the tree.
+
+```{r data_load, include = FALSE, message = FALSE, eval = FALSE}
+###Code chunk reads in raw data from NS scans and parses video metadata to convert "observation minutes" from the scan data to timestamps
+file_names <- dir("../DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
+
+video_metadata_location <- "../DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
+video_metadata <- readChar(con = video_metadata_location, nchars = file.info(video_metadata_location)$size)
+video_metadata <- str_split(video_metadata, pattern = "Folder: ")[[1]][-1] #break all metadata into strings for each observation period (and remove preceding empty character)
+video_metadata <- str_split(video_metadata, pattern =  "start = ") #find the start time of all files
+start_timestamps <- sapply(video_metadata, function(X) str_split(X[2], pattern = "\r")[[1]][1]) #extract start time of first file and remove all extra data
+start_timestamps <- as.POSIXct(start_timestamps, format = "%Y-%m-%d_%H-%M-%S", tz = "GMT")
+start_timestamps <- with_tz(start_timestamps, "America/Panama")
+
+
+all_kinkajou_scans <-  c()
+Jan_22_check = FALSE #used later to parse two video files that started on the same day (one AM one PM)
+
+for(file_name in file_names) {
+  scan_data <- read_csv(paste("../DATA/raw/Kinkajou_Scans_Nele/", file_name, sep = ""), skip = 1, progress = FALSE)
+  colnames(scan_data) <- c("timestamp", "Region1_total", "Region1_hidden", "Region2_total", "Region2_hidden", "Region3_total", "Region3_hidden", "Kinkajou_Notes", "Video_Notes", "Extraneous")
+  scan_data <- scan_data[complete.cases(scan_data$timestamp),] %>% select(! Extraneous)
+  start_date <- str_split(file_name ,pattern = "_Cam")[[1]][1] #str_split returns a list of string components. We want the first (and only) element of this list - then the first string element in this list gives the date
+  start_date <- as.POSIXct(paste("20", start_date, sep = ""), format = "%Y_%m_%d") #date needs all 4 digits
+  start_timestamp <- start_timestamps[which(date(start_timestamps) == start_date)]
+  #Two video files started on Jan 22nd, one AM and one PM. Because this is the ONLY date where this occurred, I implemented a quick and dirty check to parse the AM file first and the PM file second, below
+  if (length(start_timestamp) > 1)
+      if (! Jan_22_check) {
+        start_timestamp <- start_timestamp[1]
+        Jan_22_check <-  TRUE
+      } else start_timestamp <- start_timestamp[2]
+  #end Jan 22 case
+  scan_data$timestamp <- start_timestamp + period_to_seconds(hms(scan_data$timestamp))
+  scan_data$Study_night <- round(as.numeric(start_timestamp - start_timestamps[1], units = "days"), digits = 0)
+  all_kinkajou_scans <- rbind(all_kinkajou_scans, scan_data)
+}
+
+```
+
+```{r data_prep, include = FALSE, eval = FALSE}
+###Code Chunk converts total and hidden kinkajou counts to visible and hidden, then prepares the data structure for analysis
+#convert empty count cells (NAs) to 0
+count_data <- all_kinkajou_scans[,2:7] # columns 2 through 7 are the count data columns, we want NAs in the notes columns, but 0s in the count data
+count_data[is.na(count_data)] <- 0
+all_kinkajou_scans[,2:7] <- count_data
+
+#The data as read contain the TOTAL number of kinkajous and the number of those total that are hidden. As suggested by the new names given to the columns in this data structure, we want the count of visible and hidden kinkajous, not the total. The adjustment is made below
+all_kinkajou_scans <- mutate(all_kinkajou_scans, Region1_visible = Region1_total - Region1_hidden, Region2_visible = Region2_total - Region2_hidden, Region3_visible = Region3_total - Region3_hidden) %>% 
+  select(timestamp, Region1_total, Region2_total, Region3_total, Region1_visible, Region1_hidden, Region2_visible, Region2_hidden, Region3_visible, Region3_hidden, Study_night, Kinkajou_Notes, Video_Notes)
+
+write.csv(all_kinkajou_scans, "../DATA/processed/all_kinkajou_scans.csv")
+
+#pivot dataframe to long format for easy usage in ggplot
+all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
+                                   cols = Region1_visible:Region3_hidden,
+                                   names_to = c("Region", "Visibility"),
+                                   names_sep = "_",
+                                   values_to = "Count")
+
+all_kinkajou_scans_long$Region <- sapply(all_kinkajou_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
+
+write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans_long.csv")
+```
+
+```{r nightly_kink_counts, include = FALSE}
+###Code Chuck converts kinkajou counts from full nights into kinkajou minutes per hour, then adds a column for "growth" in kinkajou minutes over the course of the study, which enables unbiased visual comparison with other growth variables, such as flower density.
+all_kinkajou_scans <- read.csv("../DATA/processed/all_kinkajou_scans.csv")
+all_kinkajou_scans_long <- read.csv("../DATA/processed/all_kinkajou_scans_long.csv")[,-1]
+kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour))
+
+kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
+
+```
+
+### Drone Flights and Flower Counts
+
+Between December 27, 2019 and January 23, 2020, we piloted a DJI Phantom4 Pro drone to collect aerial photographs of the tree crown each afternoon before the flowers opened and each morning at dawn (weather permitting). Over 100 images were taken in in a regular grid on each flight, then stitched into an orthomosaic image using Agisoft. Using QGIS (Version 3.2.9), we geo-referenced all orthomosaics to Google Satellite imagery of the research station and hand-traced outlines of the three regions. For each orthomosaic, we then created a geo-referenced spatial point over each visible flower, annotating whether the flower was upright or fallen over (Figure 1B). Flowers were assigned to regions using the QGIS intersect function. Flower densities were calculated by dividing upright flower counts by the area of corresponding region shapes in QGIS. On nights for which drone flights on both the preceding evening and the next morning produced complete, high quality orthomosaics, the average flower count of the two images was used for analysis.
+
+```{r load_balsa_data, include = FALSE, message = FALSE, eval = FALSE}
+###Code chunk reads in shape files from QGIS annotation of drone imagery and converts them into a spatial features data frame
+region_shapes <- st_read("../DATA/raw/Crown Region Shapes/Crown_Regions.shp") %>% st_set_crs("WGS84") #the shapefiles have already been used to sort flowers. THey are loaded here primarily for the purpose of determining region areas and thus flower densities
+
+  
+files = strsplit(dir("../DATA/raw/Flower_geopackages"), split = "[.]") #seperate filenames from extensions for all files in folder
+files = files[sapply(files, function(X) X[2] == "gpkg")] #reduce file list only to gpkg files
+geopackages <- vector("list", length = length(files))
+for(i in seq_along(files)){
+  flower_sf <- st_read(paste("../DATA/raw/Flower_geopackages/", files[[i]][1], ".", files[[i]][2], sep = ""), quiet = TRUE)
+  flower_sf$Region <- strsplit(files[[i]][1], split = NULL)[[1]] %>% last() %>% as.numeric() + 1 #QGIS labelled regioning grouping outputs at 0 (last element of savefile string); add one to get region labels that match kinkajou data
+  flower_sf$Date <- strsplit(files[[i]][1], split = "_")[[1]][2]
+  geopackages[[i]] <- flower_sf
+}
+all_upflowers <- do.call(rbind, geopackages)
+all_upflowers$Region <- factor(all_upflowers$Region)
+
+#Drone flights are labelled by a character with date and time of scan. The date needs to be converted to a study day variable and the time put into its own column
+all_upflowers <- all_upflowers %>% mutate(Study_night = sapply(Date, function(X) get_study_day_and_time(X, study_start = as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama"))[[1]]),
+                                          Time = factor(sapply(Date, function(X) get_study_day_and_time(X, study_start= as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama")) [[2]])))
+```
+
+```{r flower count cleaning, include = FALSE, eval = FALSE}
+### Code chunk removes data marked as unreliable in notes
+all_upflowers <- all_upflowers %>% filter(Time == "AM" | !Study_night %in% c(23, 26, 25, 32)) %>% #remove data from images marked in notes as poor quality photos
+  filter(Time == "PM" | !Study_night %in% c(20,21)) #remove data from images marked in notes as poor quality photos
+```
+
+```{r flower counting, include = FALSE, eval = FALSE} 
+### Code chunks counts flower spatial features, calculates densities from regions shape files, and stores data into a dataframe
+flower_counts <- all_upflowers %>% 
+  mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recording s, so we subtract one from all AM study night values
+  group_by(Study_night, Time) %>% 
+  summarise(Count = n()) %>% 
+  group_by(Study_night) %>% #where there were good photos for both AM and PM, we will use the mean flower count which is achieved by grouping and summariying
+  summarise(Count = mean(Count)) %>% 
+  transform(Growth = get_growth_index(Count)) %>% #used to visually compare changes in flower count to changes in kinkajou residency without bias
+  mutate(Density = 10 * as.numeric(Count/(sum(st_area(region_shapes))))) #multiply by ten to get flowers per 10 m^2, which will bring down the variance on estimated effect sizes
+
+flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordings, so we subtract one from all AM study night values
+  group_by(Study_night, Region, Time) %>% 
+  summarise(Count = n()) %>% 
+  group_by(Study_night, Region) %>% 
+  summarise(Count = mean(Count)) %>% 
+  group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
+  ungroup()
+
+flower_counts_region <- flower_counts_region %>% mutate(Density = 10 * as.numeric(Count/(st_area(region_shapes)[Region]))) #divide flower count by area of region to get flower density. COnvert to flowers/10m^2 to manage effect sizes
+```
+
+```{r calculate adjusted flower densities, include = FALSE, eval = FALSE}
+### Code chunk converts regional densities into an overall density and regional density differences. This is useful for separating overall all flower abundance and relative regional differences in statistical analyses
+
+flower_counts_region <- flower_counts_region %>% mutate(Relative_Density = Density - flower_counts$Density[pmatch(Study_night, flower_counts$Study_night, duplicates.ok = TRUE)]) #match study_nights between regional and full tree flower count data, subtracting the full tree flower density from each regional density for each night
+
+flower_counts_region$Expected_Relative_Density <- NA
+for(i in 1:nrow(flower_counts_region)){
+  flower_counts_region$Expected_Relative_Density[i] <- mean(filter(flower_counts_region, 
+                                                                   Study_night < flower_counts_region$Study_night[i] &
+                                                                     Region == flower_counts_region$Region[i])$Relative_Density)
+}
+
+save(flower_counts_region, file = "../DATA/processed/flower_counts_region.Rdata")
+save(flower_counts, file = "../DATA/processed/flower_counts.Rdata")
+```
+
+```{r combining_data, include = FALSE, eval = FALSE}
+## Code Chunk integrates kinkajou scans and flower counts into a single dataframe
+combined_data <- merge(flower_counts, kinkajou_counts, by = "Study_night", all = TRUE)
+
+flower_averages <- flower_counts_region %>% 
+  group_by(Region) %>% 
+  summarize(total_flowers = sum(Count)) %>%
+  mutate(proportion = total_flowers/sum(total_flowers))
+
+combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE) %>%
+  mutate(Total_Flowers = combined_data$Count[pmatch(Study_night, combined_data$Study_night, duplicates.ok = TRUE)]) %>%
+  mutate(Average_Density = 10 * Total_Flowers/sum(st_area(region_shapes))) #get density in flowers/10m^2
+
+save(combined_data_region, file = "../DATA/processed/combined_data_region.Rdata")
+```
+
+### Statistical Analysis
+
+#### Overview
+
+To assess the drivers of kinkajou movement within the balsa crown, we fit hierarchical models examining 1) nightly kinkajou residence times within each region, 2) kinkajou transitions between regions based on flower densities, and 3) kinkajou transitions between regions based on the presence of other kinkajous. To create a useful reference for understanding how kinkajou behavior deviates from what could be expected if an animal moved at random between regions, we simulated random transitions and fit the same models to the simulated data. Finally, to understand how memory influences kinkajou movement through the tree crown, we extracted sequences of movement between regions during periods when only one kinkajou was in the tree (and thus we could be confident it was the same kinkajou) and analyzed the Shannon's Entropy and 1st-4th order conditional entropies of the sequences according to protocols described in @riotte-lambert2017. These measures tell us how random a kinkajou's transitions appear given infomation about some number of previous locations it has been. If gaining information about more previous locations makes transitions appear less random, it suggests the kinkajous remember where they have been and modulate their behavior in response. The posterior distributions of key regression parameters, based on our predictions, were compared to null expectations (either 0, or the posterior distribution of the same parameter when the model was fit to simulated data). 
+
+All analyses were conducted in R, using the package "rethinking" [@mcelreath2020] to interface with STAN [@carpenter2017stan]. Each model was fitted using four Markov Chain Monte Carlos (MCMCs) of 3000 iterations, with the first 1500 iterations discarded. We used effective sample size and $\hat{R}$ calculations alongside visual assessment to determine whether MCMCs converged and parameter estimates were adequately mixed.
+
+#### Reference Model Simulations
+
+To serve as a reference model for our analysis, we simulated kinkajou movements between tree regions using a first order Markov process with transition probabilities derived from the rate of kinkajou transitions between regions across the whole study. We maintained the overall timing of kinkajou visits by initializing agents entering the tree at the same times (and to the same regions) as kinkajous in the empirical data. We simulated this process 100 times and use the resulting data throughout subsequent analyses as a reference for what kinkajou movements would look like if they were based purely on fixed, per-minute transition rates and had no dependence on previous behavior, flower counts, or other kinkajous.
+
+```{r Get_transitions, include = FALSE, eval = FALSE}
+### Code chunk finds all of the transitions between regions that occur in the data and stores them as a list of arrays, where each study night is an array in the list, the z dimension of each array is time, the y dimension is the region of departure, the x dimension is the region of arrival, and each cell gives the number of such transitions that occured at the given time
+get_transitions <- function(count_data){
+  #input: a dataframe with columns "Region1_total", "Region2_total", "Region3_total" and (optionally) "timestamp".
+  #output: an array giving the number of transitions from one region (first dimension) to another (second dimension) for each minute (row) of the input data (third dimension)
+  transitions <- array(data = 0, dim = c(4,4,nrow(count_data)))
+  if("timestamp" %in% colnames(count_data)) arrange(count_data, timestamp)
+  count_data <- select(count_data, Region1_total, Region2_total, Region3_total)
+  for(i in 2:nrow(count_data)){
+    #to calculate the transition matrix, we treat the counts in the previous timestep as the row totals of the transition matrix
+    row_totals <- c(unlist(count_data[i-1,]),
+                    max(sum(count_data[i,]) - sum(count_data[i -1,]), 0)) #create a fourth row total for kinkajous entering the tree by differencing the total kinkajou counts of the current timestep and the previous timestep, counting only positive differences.
+    #we then treat the counts in the current timestep as the column totals in the transition matrix
+    col_totals <- c(unlist(count_data[i,]),
+                    max(sum(count_data[i-1,]) - sum(count_data[i,]), 0)) #create a fourth column total for kinkajous leaving the tree
+    if(sum(row_totals) == 0) transitions[,,i] <- 0 else {#fills entire file with 0s if no kinkajous are in the tree (or left the tree) in the given timestep
+      for(j in seq_along(row_totals)){
+        for(k in seq_along(col_totals)){
+          transitions[j,k,i] <- floor(row_totals[j] * col_totals[k]/sum(row_totals)) #This gives the expected number of transitions from the region in element j of row_totals to the region in element k of col_totals. Because we need integers, rounding down in a conservative approach, effectively excluding a number of ambiguous transitions
+       
+        }
+      }
+    }
+  }
+  return(transitions)
+}
+
+#Because we only have counts, this method can sometimes be ambiguous when multiple transitions occur. For example, in the transition from file 202 to 203 of Study Night 20, there could either be transitions from 1 to 2 and 4 to 3, or from 1 to 3 and 4 to 2. Our approach will always chose the possibility with the lowest initial numeric combination (eg 1 to 2 instead of 1 to 3.)
+
+transition_arrays <- all_kinkajou_scans %>% group_by(Study_night) %>% group_map(~get_transitions(.x))
+names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
+save(transition_arrays, file = "../data/processed/transition_arrays.Rdata")
+```
+
+```{r reference_model_1_simulations, include = FALSE, eval = FALSE}
+load(file = "../data/processed/transition_arrays.Rdata")
+###Code chunk initilizes agents in the tree using entry times from empirical data, then simulates agent transitions using first order transition rates calculted from the transition arrays extracted above
+
+all_transitions <- Reduce("+", lapply(transition_arrays, function(X) apply(X, MARGIN = c(1,2), sum))) #get the transition matrices for each sequence by applying sum across the third dimension of transition arrays in the solo_transitions list, then add these matrices together using the reduce function
+transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
+
+entries <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
+for(night in names(transition_arrays)){
+  entries[entries$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
+}
+entry_points <- which(entries[,1:3] == 1, arr.ind = TRUE)
+
+#this should be wrapped into a function
+simulated_scans = vector(mode = "list", length = 100)
+for(sim in seq_along(simulated_scans)){
+  simulated_scans[[sim]] <- entries
+  for(entry in seq_along(entry_points[,1])){
+    #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
+    i = entry_points[entry,1]
+    j = entry_points[entry,2]
+    study_night = simulated_scans[[sim]]$Study_night[i]
+    while(j != 4 & study_night == simulated_scans[[sim]]$Study_night[i]) {
+      j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
+      if(j != 4) {
+        if(i < nrow(simulated_scans[[sim]])){ 
+          i <- i + 1
+          simulated_scans[[sim]][i,j] <- simulated_scans[[sim]][i,j] + 1 
+        } else j <- 4 #simulated kinkajou exits if end of study period arrives
+      }
+    }
+  }
+  print(paste("simulation", sim, "finished", sep = " "))
+}
+names(simulated_scans) <- as.character(1:length(simulated_scans))
+save(simulated_scans, file = "../Results/reference_simulations1.Rdata")
+```
+
+```{r reference model 1 data_prep, include = FALSE, eval = FALSE}
+### Code chunk integrates simulated kinkajou presence data with empirical flower data for analysis
+load("../Results/reference_simulations1.Rdata")
+
+#pivot dataframe to long format for easy usage in ggplot
+simulation_scans_long <- simulated_scans %>% 
+  lapply(pivot_longer, cols = Region1_total:Region3_total,
+         names_to = c("Region", "Visibility"),
+         names_sep = "_",
+         values_to = "Count") %>% 
+  map_dfr(~ .x, .id = "Simulation")
+
+simulation_scans_long$Region <- sapply(simulation_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
+
+
+simulation_scans_long <- simulation_scans_long %>% 
+  group_by(Simulation) %>% 
+  group_modify(~merge(.x, simulated_scans[[.y$Simulation]], by = c("timestamp", "Study_night")))
+
+simulated_counts <- simulation_scans_long %>% group_by(Simulation, Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 3)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour)) #scan data is in totals, not "hidden" or "visible", so there are half the number of categories as in the empirical data
+
+simulated_counts_region <- simulation_scans_long %>% group_by(Simulation, Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 1)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour))) %>% 
+  ungroup()
+
+combined_sim_data <- simulated_counts %>% group_by(Simulation) %>% group_modify(~ merge(flower_counts, .x, by = "Study_night", all = TRUE)) %>% 
+  ungroup()
+
+combined_sim_data_region <- simulated_counts_region %>% 
+  group_by(Simulation) %>% 
+  group_modify( ~merge(flower_counts_region, .x, by = c("Study_night","Region") , all = TRUE)) %>%
+  mutate(Total_Flowers = combined_sim_data$Count[pmatch(Study_night, combined_sim_data$Study_night, duplicates.ok = TRUE)]) %>%
+  mutate(Average_Density = 10 * Total_Flowers/sum(st_area(region_shapes))) %>% #get desnity in flowers/10m^2
+  ungroup()
+
+save(combined_sim_data_region, file = "../DATA/processed/combined_sim_data_region.Rdata")
+```
+
+#### Comparing Kinkajou Residence Time and Regional Flower Densities
+
+To examine the relationship between regional flower densities and kinkajous' residence times, we fit a hierarchical, zero-augmented gamma model (a type of hurdle model) to the data,
+
+
+\begin{align*}
+Residence \backsim{}& dZAGamma(p, \mu, \Theta) \\
+logit(p) \backsim{}& p_0 + p_R + \beta_1 \Psi + \beta_2\psi_R + p_t \\
+log(\mu) \backsim{}& \mu_0 + \mu_R + \beta_3 \Psi + \beta_4 \psi_R + \mu_t \\
+p_0, \mu_0 \backsim{}& N(0,2) \\
+\beta_1, \beta_2, \beta_3, \beta_4 \backsim{}& N(0,2) \\
+p_R \backsim{}& N(0, \sigma_{p_R}) \\
+\mu_R \backsim{}& N(0, \sigma_{\mu_R}) \\
+p_t \backsim{}& N(0, \sigma_{p_t}) \\
+\mu_t \backsim{}& N(0, \sigma_{\mu_t}) \\
+\Theta, \sigma_{p_R}, \sigma_{\mu_R}, \sigma_{p_t}, \sigma_{\mu_t} \backsim{}& exp(1)
+\end{align*}
+
+where $Residence$ is the predicted number of minutes kinkajous spent in a tree region per hour of observation on a given night, $p$ is the probability of a kinkajou entering the region on that night, $\mu$ is the average residence time per hour given at that at least one kinkajou enters the region, $\Theta$ is the scale parameter of a gamma distribution, $p_0$ is a grand mean for the intercept of $p$, $p_R$ gives expected change in $p$ given the region of interest, $\Psi$ gives the density of flowers in the full tree crown on the given night, $\psi_R$ gives the difference between the density of flowers in the region of interest and the density of flowers in the full tree, $p_t$ and $\mu_t$ give the effect of the given night on $p$ and $\mu$, $\sigma$ parameters give the variance of fixed effects on $p$ and $\mu$ across regions ($R$) and nights ($t$), and $\beta$ coefficients are linear estimators of corresponding flower densities on $p$ and $\mu$. dZAGamma is a density function resulting from a mixture of the Bernoulli distribution and the gamma distribution such that $p$ gives the probability of observing a 0, and the probability of a non-zero value $x$ is $(1-p)*dgamma(x, \mu/\Theta, \Theta)$
+
+We use this model to test the predictions of Hypothesis 1 (Kinkajous forage longer in regions with greater flower density).
+
+```{r load-processed-data2, include = FALSE, EVAL = FALSE}
+#This code chunk is identical to the one at the top of the document. If for any reason data-processing or simulations need to be rerun, data should be loaded AFTER (i.e. here)
+load(file = "../DATA/processed/flower_counts_region.Rdata")
+load(file = "../DATA/processed/flower_counts.Rdata")
+load(file = "../data/processed/transition_arrays.Rdata")
+load(file = "../DATA/processed/combined_data_region.Rdata")
+load(file = "../DATA/processed/combined_sim_data_region.Rdata")
+all_kinkajou_scans <- read.csv("../DATA/processed/all_kinkajou_scans.csv")  %>% mutate(timestamp = as.POSIXct(timestamp, tz = "America/Panama"))
+all_kinkajou_scans_long <- read.csv("../DATA/processed/all_kinkajou_scans_long.csv")[,-1] %>% mutate(timestamp = as.POSIXct(timestamp, tz = "America/Panama"))
+```
+```{r regional analysis relative density, include=FALSE, eval = FALSE}
+#Code chunk generates stan code for the model described above and fits this model to the combined flower density and kinkajou scan data
+residence_by_region_relative_density_stan_fit <- map2stan(
+  alist(
+    Minutes_Per_Hour ~ dzagamma2(p, mu, scale),
+    logit(p) <-  ap + ap_Region[Region] + bp_Average_Density * Average_Density + bp_Relative_Density * Relative_Density + ap_night[Study_night],	# logit link function for the bernoulli distribution on probability of observing a zero (no kinkajou residence)
+    log(mu)  <-  am + am_Region[Region] + bm_Average_Density * Average_Density + bm_Relative_Density * Relative_Density + am_night[Study_night], # log link function for the mean (center?) of the gamma distribution on residence time, given a zero is not observed
+    #priors below
+    c(ap,am) ~ dnorm(0,2), #prior centers initial probability distribution of 0 residence time at 50% and residence time when a visit occurs at 1 minute. 
+    ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region (probability of 0)
+    am_Region[Region] ~ dnorm(0, am_sigma_Region), #prior distribution on random effects of region (residence time given a 0 is not observed)
+    ap_night[Study_night] ~ dnorm(0, ap_sigma_night), #prior distribution on random effects of night (probability of 0)
+    am_night[Study_night] ~ dnorm(0, am_sigma_night), #prior distribution on random effects of night (residence time given a zero is not observed)
+    c(bp_Average_Density,bm_Average_Density) ~ dnorm(0, 2), #prior distributions the coefficients for effects of average density (whole tree) on residence times (probablity of 0 and residence time given 0 is not observed) 
+    c(bp_Relative_Density,bm_Relative_Density) ~ dnorm(0, 2),	#prior distributions the coefficients for effects of relative density on residence times (probability of 0 and residence time given 0 is not observed)
+    c(scale, am_sigma_night, ap_sigma_night, ap_sigma_Region, am_sigma_Region) ~ dexp(1) #prior distributions for variance parameters
+  ),
+  data = combined_data_region %>% 
+    select(Minutes_Per_Hour, Region, Relative_Density, Average_Density, Study_night) %>% 
+    na.omit() %>%
+    mutate(Average_Density = as.numeric(Average_Density), Study_night = as.numeric(factor(Study_night))), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(scale="lower=0")
+)
+
+save(residence_by_region_relative_density_stan_fit, file = "../Results/residence_by_region_MCMCs_relative_density.Rdata")
+stancode(residence_by_region_relative_density_stan_fit)
+```
+```{r simulated regional density analysis, include = FALSE, eval = FALSE}
+residence_by_region_relative_density_sim_stan_fit <- map2stan(
+  alist(
+    Minutes_Per_Hour ~ dzagamma2(p, mu, scale),
+    logit(p) <-  ap + ap_Region[Region] + bp_Average_Density * Average_Density + bp_Relative_Density * Relative_Density + ap_night[Study_night],	# logit link function for the bernoulli distribution on probability of observing a zero (no kinkajou residence)
+    log(mu)  <-  am + am_Region[Region] + bm_Average_Density * Average_Density + bm_Relative_Density * Relative_Density + am_night[Study_night], # log link function for the mean (center?) of the gamme distribution on residence time, given a zero is not observed
+    #priors below
+    c(ap,am) ~ dnorm(0,2), #prior centers initial probability distribution of 0 residence time at 50% and residence time when a visit occurs at 1 minute. 
+    ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region (probability of 0)
+    am_Region[Region] ~ dnorm(0, am_sigma_Region), #prior distribution on random effects of region (residence time given a 0 is not observed)
+    ap_night[Study_night] ~ dnorm(0, ap_sigma_night), #prior distribution on random effects of night (probability of 0)
+    am_night[Study_night] ~ dnorm(0, am_sigma_night), #prior distribution on reandom effects of night (residence time given a zero is not observed)
+    c(bp_Average_Density,bm_Average_Density) ~ dnorm(0, 2), #prior distributions the coefficients for effects of average density (whole tree) on residence times (probablity of 0 and residence time given 0 is not observed) 
+    c(bp_Relative_Density,bm_Relative_Density) ~ dnorm(0, 2),	#prior distributions the coefficients for effects of relative density on residence times (probability of 0 and residence time given 0 is not observed)
+    c(scale, am_sigma_night, ap_sigma_night, ap_sigma_Region, am_sigma_Region) ~ dexp(1) #prior distributions for variance parameters
+  ),
+  data = combined_sim_data_region %>% 
+    select(Minutes_Per_Hour, Region, Relative_Density, Average_Density, Study_night) %>% 
+    na.omit() %>%
+    mutate(Average_Density = as.numeric(Average_Density), Study_night = as.numeric(factor(Study_night))), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(scale="lower=0")
+)
+
+save(residence_by_region_relative_density_sim_stan_fit, file = "../Results/residence_by_region_sim_MCMCs_relative_density.Rdata")
+stancode(residence_by_region_relative_density_sim_stan_fit)
+```
+#### Kinkajou Decision Making
+While the model of kinkajou residence time, presented above, reveals how kinkajous respond to regional flower densities, it can not elucidate how kinkajous assess multiple regions at once and make decisions. For this purpose, we analyzed the scans where the distribution of kinkajous in the tree crown changed. Because we predicted that kinkajous would choose regions with greater density, and the movement from one of the three regions to another presents a simple binary choice, we encoded each region transition of a kinkajou as either a success (moved to the available region with greater flower density) or a failure (moved to the available region with lesser flower density). We then used Bayesian estimation to fit a hierarchical model of success to the data (Equation 2)
+
+
+\begin{align*}
+Success \backsim{}& binomial(1, p) \\
+logit(p) \backsim{}& p_0 + p_{From} + p_{Pref} + p_{I} + \beta_5\Delta_\psi \\
+p_0, \beta_5 \backsim{}& N(0,2) \\
+p_{From}, \backsim{}& N(0, \sigma_{From}) \\
+p_{Pref}, \backsim{}& N(0, \sigma_{Pref}) \\
+p_{I}, \backsim{}& N(0, \sigma_{I}) \\ 
+\sigma_{From}, \sigma_{Pref}, \sigma_{I} \backsim{}& exp(1)
+\end{align*}
+
+where $p$ is the probability that a particular transition is a success, $p_0$ is a grand mean for the intercept of $p$, $p_{From}$ is a conditional adjustment on the probability of success based on the region in which the kinkajou started, $p_{Pref}$ is a further adjustment to the intercept based on the unoccupied region with the higher flower density, $p_I$ is an interaction effect given the combination of $p_{From}$ and $p_{Pref}$, $\Delta_{\psi}$ is the difference in flower density between the region selected and the region not selected, $\beta_5$ is a linear regression coefficient of $\Delta_{\psi}$, and $\sigma_{trans}$ is the variance of transition effects.
+
+We use this model to test the predictions of Hypothesis 2A (Kinkajous perceptually assess the density of flowers across the tree crown), predicting a mean value of $\hat{p} > 0.5$, marginal to regional effects, and that $\hat{\beta_5} > 0$.
+
+```{r transition decisions empirical, include = FALSE}
+### Code chunk reduces transition data to a dataframe of decisions, integrating data on the distribution of kinkajous and flowers in the tree at the time of decision
+decisions <- c()
+for(i in seq_along(transition_arrays)){
+  new_decisions <- get_decision_info(transition_array = transition_arrays[[i]], 
+                                     flower_data = filter(combined_data_region, Study_night == names(transition_arrays[i])), 
+                                     kinkajou_counts = filter(all_kinkajou_scans_long, Study_night == names(transition_arrays[i]))) #see helper functions for get_decision_info
+  if(nrow(new_decisions) > 0) new_decisions$Study_night = names(transition_arrays[i])
+  decisions = rbind(decisions, new_decisions)
+}
+decisions <- decisions %>% mutate(relative_density_diff = relative_density_to - relative_density_avoid,
+                                  expected_density_diff = expected_rel_dens_to - expected_rel_dens_avoid,
+                                  kinkajou_diff = kink_count_to - kink_count_avoid)
+decisions <- mutate(decisions, Success_Observed = relative_density_diff > 0, 
+                    Success_Expected = expected_density_diff > 0,
+                    Success_Social = kink_count_to - kink_count_avoid > 0,
+                    From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_")))) #The From_To column is an artifact from an earlier, less useful model
+
+get_Preferred <- function(From, To, Success) {
+  if(is.na(From) | is.na(To) | is.na(Success)) return(NA)
+  if (Success) return(To) else return(which(!c(1,2,3) %in% c(From, To)))
+}
+
+decisions <- mutate(decisions, 
+                    Preferred_Observed = mapply(get_Preferred, From = From, To = To, Success = Success_Observed),
+                    Preferred_Expected = mapply(get_Preferred, From = From, To = To, Success = Success_Expected),
+                    Preferred_Social = mapply(get_Preferred, From = From, To = To, Success = Success_Social))
+
+decisions <- mutate(decisions,
+                    Success_Condition_Observed = factor(mapply(paste, From, Preferred_Observed, MoreArgs = list(sep = "_"))),
+                    Success_Condition_Expected = factor(mapply(paste, From, Preferred_Expected, MoreArgs = list(sep = "_"))),
+                    Success_Condition_Social = factor(mapply(paste, From, Preferred_Social, MoreArgs = list(sep = "_"))))
+```
+
+```{r decision model, include = FALSE, eval = FALSE}
+#Code chunk generates Stan Code for the model described above and fits the model to the data on kinkajou decisions
+decision_model <- ulam(
+  alist(
+    Success_Observed ~ binomial(1, p),
+    logit(p) <-  ap + ap_From[From] + ap_Preferred[Preferred] + ap_Success_Condition[Success_Condition] + bp_flowers * density_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From[From] ~ dnorm(0, ap_sigma_From), #prior distribution on random effects of departure (probability of 0)
+    ap_Preferred[Preferred] ~ dnorm(0, ap_sigma_Preferred), #prior distribution on random effects of region with higher density
+    ap_Success_Condition[Success_Condition] ~ dnorm(0, ap_sigma_Condition), #prior distribution on random effects of the transition interaction
+    bp_flowers ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    c(ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition) ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions %>%
+    mutate(decisions, density_diff = abs(relative_density_diff), Preferred = Preferred_Observed) %>%
+    select(density_diff, From, Preferred, Success_Condition_Observed, Success_Observed) %>% 
+    na.omit() %>% 
+    mutate(Success_Condition = factor(Success_Condition_Observed)), #remove silly factor levels with NAs 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_From="lower=0",
+                   ap_sigma_Preferred="lower=0",
+                   ap_sigma_Condition="lower=0"),
+  log_lik = TRUE
+)
+
+save(decision_model, file = "../Results/decision_model.Rdata")
+#stancode(decision_model)
+```
+
+```{r Get_transitions_sims1, include = FALSE, eval = FALSE}
+### Code chunk extracts transitions from simulated data as from empirical data
+load("../Results/reference_simulations1.Rdata")
+
+simulated_transition_arrays <- vector("list", length = length(simulated_scans))
+names(simulated_transition_arrays) <- names(simulated_scans)
+for (i in seq_along(simulated_scans)){
+  simulated_transition_arrays[[i]] <- simulated_scans[[i]] %>% 
+    group_by(Study_night) %>% 
+    group_map(~get_transitions(.x))
+  names(simulated_transition_arrays[[i]]) <- as.character(unique(simulated_scans[[i]]$Study_night))
+}
+  
+
+save(simulated_transition_arrays, file = "../DATA/processed/simulated_transition_arrays.Rdata")
+```
+
+```{r transition decisions simulated, include = FALSE, eval = FALSE}
+load(file = "../DATA/processed/simulated_transition_arrays.Rdata")
+### Code chunk isolates movement decisions from simulated transition data, as with empirical data 
+decisions_sim <- vector("list", length = length(simulated_transition_arrays))
+for (h in seq_along(decisions_sim)){ 
+  for(i in seq_along(simulated_transition_arrays[[h]])){
+    new_decisions <- get_decision_info(transition_array = simulated_transition_arrays[[h]][[i]], 
+                                       flower_data = filter(combined_sim_data_region, 
+                                                            Simulation == names(simulated_transition_arrays)[h], 
+                                                            Study_night == names(simulated_transition_arrays[[h]][i])), 
+                                       kinkajou_counts = filter(simulation_scans_long, 
+                                                                Simulation == names(simulated_transition_arrays)[h], 
+                                                                Study_night == names(simulated_transition_arrays[[h]][i]))) #see helper functions for get_decision_info
+    if(nrow(new_decisions) > 0) new_decisions$Study_night = names(simulated_transition_arrays[[h]][i])
+    decisions_sim[[h]] <- rbind(decisions_sim[[h]], new_decisions)
+  }
+  decisions_sim[[h]] <- decisions_sim[[h]] %>% mutate(relative_density_diff = relative_density_to - relative_density_avoid,
+                                                      expected_density_diff = expected_rel_dens_to - expected_rel_dens_avoid,
+                                                      kinkajou_diff = kink_count_to - kink_count_avoid)
+  decisions_sim[[h]] <- mutate(decisions_sim[[h]], Success_Observed = relative_density_diff > 0, 
+                               Success_Expected = expected_density_diff > 0,
+                               Success_Social = kink_count_to - kink_count_avoid > 0,
+                               From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
+  
+  decisions_sim[[h]] <- mutate(decisions_sim[[h]], 
+                    Preferred_Observed = mapply(get_Preferred, From = From, To = To, Success = Success_Observed),
+                    Preferred_Expected = mapply(get_Preferred, From = From, To = To, Success = Success_Expected),
+                    Preferred_Social = mapply(get_Preferred, From = From, To = To, Success = Success_Social))
+
+decisions_sim[[h]] <- mutate(decisions_sim[[h]],
+                    Success_Condition_Observed = factor(mapply(paste, From, Preferred_Observed, MoreArgs = list(sep = "_"))),
+                    Success_Condition_Expected = factor(mapply(paste, From, Preferred_Expected, MoreArgs = list(sep = "_"))),
+                    Success_Condition_Social = factor(mapply(paste, From, Preferred_Social, MoreArgs = list(sep = "_"))))
+}
+
+save(decisions_sim, file = "../Results/simulation_decisions.Rdata")
+```
+
+```{r decision-model-sim, include = FALSE, eval = FALSE}
+#Code chunk generates Stan Code for the model described above and fits the model to the data on kinkajou decisions
+decision_model_sim <- ulam(
+  alist(
+    Success_Observed ~ binomial(1, p),
+    logit(p) <-  ap + ap_From[From] + ap_Preferred[Preferred] + ap_Success_Condition[Success_Condition] + bp_flowers * density_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From[From] ~ dnorm(0, ap_sigma_From), #prior distribution on random effects of departure (probability of 0)
+    ap_Preferred[Preferred] ~ dnorm(0, ap_sigma_Preferred), #prior distribution on random effects of region with higher density
+    ap_Success_Condition[Success_Condition] ~ dnorm(0, ap_sigma_Condition), #prior distribution on random effects of the transition interaction
+    bp_flowers ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    c(ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition) ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions_sim %>% map_dfr(~ .x, .id = "Simulation") %>% #combine dataframes from list
+    mutate(density_diff = abs(relative_density_diff), Preferred = Preferred_Observed) %>%
+    select(density_diff, From, Preferred, Success_Condition_Observed, Success_Observed) %>% 
+    na.omit() %>% 
+    mutate(Success_Condition = factor(Success_Condition_Observed)), #remove silly factor levels with NAs 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_From="lower=0",
+                   ap_sigma_Preferred="lower=0",
+                   ap_sigma_Condition="lower=0"),
+  log_lik = TRUE
+)
+
+save(decision_model_sim, file = "../Results/decision_model_sim.Rdata")
+#stancode(decision_model_sim)
+```
+
+#### The Role of Memory in Decision Making
+
+In addition to assessing the current distribution of flowers in the tree crown, kinkajous may use information obtained during foraging on previous nights to inform their movement decisions. To test this hypothesis, we fit our data to a third model, identical in structure to Equation 2 except that $\beta_5\Delta_\psi$ is replaced by $\beta_6\Delta_{\overline{\psi}}$, where $\Delta_{\overline{\psi}}$ is the difference between (1) the average flower density of the selected region on all previous nights and (2) the average flower density of the unselected region on all previous nights.
+
+```{r expectation decision model, include = FALSE, eval = FALSE}
+### Code chunk generates stan code for the model described above and fits this model to the data on kinkajou decision making
+decision_model_expectation <- ulam(
+  alist(
+    Success_Expected ~ binomial(1, p),
+    logit(p) <-  ap + ap_From[From] + ap_Preferred[Preferred] + ap_Success_Condition[Success_Condition] + bp_flowers * density_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From[From] ~ dnorm(0, ap_sigma_From), #prior distribution on random effects of departure (probability of 0)
+    ap_Preferred[Preferred] ~ dnorm(0, ap_sigma_Preferred), #prior distribution on random effects of region with higher density
+    ap_Success_Condition[Success_Condition] ~ dnorm(0, ap_sigma_Condition), #prior distribution on random effects of the transition interaction
+    bp_flowers ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    c(ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition) ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions %>%
+    mutate(decisions, density_diff = abs(expected_density_diff), Preferred = Preferred_Expected) %>%
+    select(density_diff, From, Preferred, Success_Condition_Expected, Success_Expected) %>% 
+    na.omit() %>% 
+    mutate(Success_Condition = factor(Success_Condition_Expected)), #remove silly factor levels with NAs 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_From="lower=0",
+                   ap_sigma_Preferred="lower=0",
+                   ap_sigma_Condition="lower=0"),
+  log_lik = TRUE
+)
+
+save(decision_model_expectation, file = "../Results/decision_model_expectation.Rdata")
+#stancode(decision_model_expectation)
+```
+
+```{r epectation-decision-model-sim, include = FALSE, eval = FALSE}
+#Code chunk generates Stan Code for the model described above and fits the model to the data on kinkajou decisions
+expectation_decision_model_sim <- ulam(
+  alist(
+    Success_Expected ~ binomial(1, p),
+    logit(p) <-  ap + ap_From[From] + ap_Preferred[Preferred] + ap_Success_Condition[Success_Condition] + bp_flowers * density_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From[From] ~ dnorm(0, ap_sigma_From), #prior distribution on random effects of departure (probability of 0)
+    ap_Preferred[Preferred] ~ dnorm(0, ap_sigma_Preferred), #prior distribution on random effects of region with higher density
+    ap_Success_Condition[Success_Condition] ~ dnorm(0, ap_sigma_Condition), #prior distribution on random effects of the transition interaction
+    bp_flowers ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    c(ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition) ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions_sim %>% map_dfr(~ .x, .id = "Simulation") %>% #combine dataframes from list
+    mutate(density_diff = abs(expected_density_diff), Preferred = Preferred_Expected) %>%
+    select(density_diff, From, Preferred, Success_Condition_Expected, Success_Expected) %>% 
+    na.omit() %>% 
+    mutate(Success_Condition = factor(Success_Condition_Expected)), #remove silly factor levels with NAs 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_From="lower=0",
+                   ap_sigma_Preferred="lower=0",
+                   ap_sigma_Condition="lower=0"),
+  log_lik = TRUE
+)
+
+save(expectation_decision_model_sim, file = "../Results/expectation_decision_model_sim.Rdata")
+#stancode(decision_model_sim)
+```
+
+To assess the impact of working memory of kinkajou decision making, we isolated periods during which only one kinkajou was in the tree crown, and thus sequences of transitions could be identified. We calculated the Shannon's Entropy and 1st-4th order conditional entropy of these sequences, using the adjustments described in @riotte-lambert2017. We used the same calculations on data from Reference Model 1 to determine whether the order and magnitude of the minimum conditional entropy from the empirical sequences differ significantly from expectations given a first-order Markov transition process.
+
+```{r solo bout extraction, include = FALSE}
+### Code chunk isolates contiguous periods with only one kinkajou in the tree and extracts the sequences of regions that kinkajou visited
+extract_bouts <- function(all_scans) {
+  solo_visits <- all_scans %>% 
+    filter((Region1_total + Region2_total + Region3_total) == 1) #only include rows where there is exactly one kinkajou
+  
+  solo_visits$location = NA
+  solo_visits$sequence = 1
+  for(i in 1:nrow(solo_visits)) {
+    solo_visits$location[i] <- which(c(solo_visits$Region1_total[i], solo_visits$Region2_total[i], solo_visits$Region3_total[i]) == 1) #where is the kinkajou?
+    if (i >= 2) {
+      if (difftime(solo_visits$timestamp[i], solo_visits$timestamp[i-1], units = "mins") != 1) { solo_visits$sequence[i] = solo_visits$sequence[i-1] + 1 #is this a new bout?
+      } else solo_visits$sequence[i] = solo_visits$sequence[i-1]
+    } 
+  }
+  return(solo_visits)
+}
+
+solo_visits <- extract_bouts(all_kinkajou_scans)
+
+#combine sequences 1 and 2, which are separated by a gap in video meant to fix clock drift
+solo_visits$sequence[solo_visits$sequence == 2] <- 1
+#Same for sequences 5 and 6
+solo_visits$sequence[solo_visits$sequence == 6] <- 5
+#Same for sequences 9 and 10
+solo_visits$sequence[solo_visits$sequence == 10] <- 9
+#Same for sequences 11 and 12
+solo_visits$sequence[solo_visits$sequence == 12] <- 11
+#Same for sequences 14 and 15
+solo_visits$sequence[solo_visits$sequence == 15] <- 14
+#Same for sequences 44-47
+solo_visits$sequence[solo_visits$sequence == 45] <- 44
+solo_visits$sequence[solo_visits$sequence == 46] <- 44
+solo_visits$sequence[solo_visits$sequence == 47] <- 44
+#61 and 62 are likely the same individual that went out of site
+solo_visits$sequence[solo_visits$sequence == 62] <- 61
+#combine sequences 72 and 73, which are separated by a gap in video meant to fix clock drift, and 74 which was seperated due to a missing minute
+solo_visits$sequence[solo_visits$sequence == 73] <- 72
+solo_visits$sequence[solo_visits$sequence == 74] <- 72
+#Combine 78 and 79, which are only seperated by a missing minute
+solo_visits$sequence[solo_visits$sequence == 79] <- 78
+#combine sequences 88 and 89, which are separated by a gap in video meant to fix clock drift
+solo_visits$sequence[solo_visits$sequence == 89] <- 88
+#Combine 93 and 94, which are only seperated by a missing minute
+solo_visits$sequence[solo_visits$sequence == 79] <- 78
+
+solo_visits$sequence <- factor(solo_visits$sequence)
+```
+```{r ref model solo visits, include = FALSE}
+load(file = "../Results/reference_simulations1.Rdata")
+load(file = "../Results/simulation_decisions.Rdata")
+### Code chunk extracts solo sequences from simulated data, as with empirical data
+reference1_solo_visits <- lapply(simulated_scans, extract_bouts)
+```
+#### Social Behavior
+
+We analyzed the role of con-specific presence in the tree crown on kinkajou decision making the same way we analyzed the role of flower density. Thus, our fourth model uses the same structure as Equation 2, except that Success = 1 when a kinkajou chooses the region currently occupied by more con-specifics and $\beta_5\Delta_{\psi}$ is replaced by $\beta_7\Delta_{\kappa}$, where $\Delta_{\kappa}$ gives the difference in number of present conspecifics between the selected region and the unselected region.
+
+```{r social decision model, include = FALSE, eval = FALSE}
+### Code chunk generates STAN code for the model described above, then fits this model the data on kinkajou transitions and presence within the tree crown
+social_decision_model <- ulam(
+  alist(
+    Success_Social ~ binomial(1, p),
+    logit(p) <-  ap + ap_From[From] + ap_Preferred[Preferred] + ap_Success_Condition[Success_Condition] + bp_kinkajous * kinkajou_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From[From] ~ dnorm(0, ap_sigma_From), #prior distribution on random effects of departure (probability of 0)
+    ap_Preferred[Preferred] ~ dnorm(0, ap_sigma_Preferred), #prior distribution on random effects of region with higher density
+    ap_Success_Condition[Success_Condition] ~ dnorm(0, ap_sigma_Condition), #prior distribution on random effects of the transition interaction
+    c(ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition) ~ dexp(1), #prior distributions for variance parameters
+    bp_kinkajous ~ dnorm(0, 2)), #prior distribution on effect of flower density differential on success rate
+  data = decisions %>% 
+    filter(kinkajou_diff != 0) %>% 
+    mutate(kinkajou_diff = abs(kinkajou_diff), Preferred = Preferred_Social) %>%
+    select(kinkajou_diff, From, Preferred, Success_Condition_Social, Success_Social) %>% 
+    na.omit() %>% 
+    mutate(Success_Condition = factor(Success_Condition_Social)), #remove silly factor levels with NAs 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_Condition="lower=0", ap_sigma_From="lower=0", ap_sigma_Pref ="lower=0"),
+  log_lik = TRUE
+)
+
+save(social_decision_model, file = "../Results/social_decision_model.Rdata")
+#stancode(social_decision_model)
+```
+
+We also explored how the distribution of kinkajous within the tree crown affects the timing of kinkajou transitions. To this end, we fit a fifth model to determine the probability of a kinkajou leaving the region it is in during any given minute. This model takes the form given in Equation 3
+
+
+\begin{align*}
+Departures \backsim{}& binomial(n,p) \\
+logit(p) \backsim{}& p_0 + p_R + p_t + \beta_8n + \beta_9k \\
+p_0 \backsim{}& N(0,2) \\
+\beta_8, \beta_9 \backsim{}& N(0,2) \\
+p_R \backsim{}& N(0,\sigma_R) \\
+p_t \backsim{}& N(0, \sigma_t) \\
+\sigma_R, \sigma_t \backsim{}& exp(1)
+\end{align*}
+
+where $Departures$ is the number of kinkajous that leave a region during a given minute-long scan period, $n$ is the number of kinkajous in the given region that minute, $p$ is the probability of a single kinkajou leaving, $p_0$ is a baseline departure rate, $p_R$ is a region specific adjustment to the departure rate, $p_t$ is a night-specific adjustment to the departure rate, $k$ is the number of kinkajou in *other* regions, and $\sigma_R$ and $\sigma_t$ give the variance in conditional adjustments to the intercept for region and night, respectively.
+
+```{r departures_data, include = FALSE}
+###Code chunk wrangles the data into a long form data frame that can fit a binomial model to determine how many kinkajous are likely to depart from a region at any given minute, as a function of the number of kinkajous in that region and the number of kinkajous in other regions. Its a little crude but gets the job done
+stays <- lapply(transition_arrays, function(X) apply(X, 3, diag)[1:3,]) #diagonal element of each slice of transition array (representing a minute) give number of kinkajous that stayed in the region they were in on the previous minute
+departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,]) #summing the rows of transition array slices gives the total number of kinkajous. Subtracting the slice diagonal gives the number that moved to a new region
+departures_df <- c()
+for (i in seq_along(departures)){
+  temp_df <- data.frame(Minute = 1:ncol(departures[[i]]), 
+                        #get stays and departures for each region, given by the rows of the respective arrays (cols are minutes)
+                        n_1 = departures[[i]][1,] + stays[[i]][1,], 
+                        n_2 = departures[[i]][2,] + stays[[i]][2,],
+                        n_3 = departures[[i]][3,] + stays[[i]][3,],
+                        departures_1 = departures[[i]][1,],
+                        departures_2 = departures[[i]][2,],
+                        departures_3 = departures[[i]][3,],
+                        Study_Night = names(departures[i]))
+  departures_df <- rbind(departures_df, temp_df)
+}
+departures_long <- matrix(nrow = 0, ncol = 6)
+
+for(i in 1:nrow(departures_df)) {
+  #Get data for Region 1
+  if (departures_df$n_1[i] > 0) departures_long <- rbind(departures_long, c(departures_df$Study_Night[i], #study Night
+                                                                            departures_df$Minute[i], #Minute
+                                                                            1, #Region
+                                                                            departures_df$n_1[i], #n
+                                                                            sum(departures_df$n_2[i], departures_df$n_3[i]), #Neighbors
+                                                                            departures_df$departures_1[i])) #Departures
+  #Get data for Region 2
+  if (departures_df$n_2[i] > 0) departures_long <- rbind(departures_long, c(departures_df$Study_Night[i],
+                                                                            departures_df$Minute[i],
+                                                                            2, #Region
+                                                                            departures_df$n_2[i], #n
+                                                                            sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
+                                                                            departures_df$departures_2[i]))
+  #Get data for Region 3
+  if (departures_df$n_3[i] > 0) departures_long <-  rbind(departures_long, c(departures_df$Study_Night[i],
+                                                                             departures_df$Minute[i],
+                                                                             3, #Region
+                                                                             departures_df$n_3[i], #n
+                                                                             sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
+                                                                             departures_df$departures_3[i]))
+}
+departures_long <- data.frame(matrix(as.numeric(departures_long), ncol = 6))
+colnames(departures_long) <- c("Study_Night", "Minute", "Region", "n", "Neighbors", "Departures")
+departures_long$Region <- factor(departures_long$Region)
+```
+
+```{r social_model_fitting, include = FALSE, eval = FALSE}
+### Code chunk generates STAN code for the model described above and fits this model to the data on regional kinkajou departures
+social_model <- ulam(
+  alist(
+    Departures ~ binomial(n, p),
+    logit(p) <-  ap + ap_Region[Region] + ap_Night[Study_Night] + bp_n * n + bp_Neighbors * Neighbors,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of departure at 50% 
+    ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region
+    ap_Night[Study_Night] ~ dnorm(0, ap_sigma_Night), #prior distribution on random effects of Study Night
+    c(bp_n, bp_Neighbors) ~ dnorm(0, 2), #prior distributions on effect of number of kinkajous in the region of interest and number of kinkajous in other regions on departure rates
+    c(ap_sigma_Region, ap_sigma_Night) ~ dexp(1)), #prior distributions for variance parameters,
+  data = departures_long %>%
+    mutate(Study_Night = factor(Study_Night)) %>% 
+    select(!Minute) %>% 
+    na.omit(), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_Region="lower=0", ap_sigma_Night="lower=0")
+)
+
+save(social_model, file = "../Results/social_model.Rdata")
+#stancode(social_model)
+```
+
+## Results
+
+### Patterns of Flower Density and Kinkajou Residence
+
+Prior to any statistical analysis of the relationship between the distribution of flowers and the movements of kinkajous in the tree crown, we performed some descriptive analysis of these patterns independently. The average density of visible, upright flowers in the tree crown over the course of the study was `r round(mean(flower_counts$Density), digits = 2)` flowers/10m^2^ (sd = `r round(sd(flower_counts$Density), digits = 2)`). The distribution of flowers across the regions we studied was relatively even and consistent: Region 1 differed in flower density from the full tree crown by an average of `r round(mean(filter(flower_counts_region, Region == "1")$Relative_Density), digits = 2)` flowers/10m^2^ (sd = `r round(sd(filter(flower_counts_region, Region == "1")$Relative_Density), digits = 2)`); Region 2 differed by an average of `r round(mean(filter(flower_counts_region, Region == "2")$Relative_Density), digits = 2)` flowers/10m^2^ (sd = `r round(sd(filter(flower_counts_region, Region == "2")$Relative_Density), digits = 2)`); Region 3 differed by an average of `r round(mean(filter(flower_counts_region, Region == "3")$Relative_Density), digits = 2)` flowers/10m^2^ (sd = `r round(sd(filter(flower_counts_region, Region == "3")$Relative_Density), digits = 2)`). We tracked the residence time of kinkajous in the tree by measure of kinkajou-minutes (e.g. if three kinkajous were observed during a 1-minute scan, we counted three kinkajou-minutes); kinkajous, collectively, spent an average of `r round(mean(kinkajou_counts$Minutes_Per_Hour), digits = 2)` kinkajou-minutes/hour in the tree crown during our observations (sd = `r round(sd(kinkajou_counts$Minutes_Per_Hour), digits = 2)`). The average times spent in Regions 1, 2, and 3 were `r round(mean(filter(kinkajou_counts_region, Region == "1")$Minutes_Per_Hour), digits = 2)` minutes/hour (sd = `r round(sd(filter(kinkajou_counts_region, Region == "1")$Minutes_Per_Hour), digits = 2)`), `r round(mean(filter(kinkajou_counts_region, Region == "2")$Minutes_Per_Hour), digits = 2)` minutes/hour (sd = `r round(sd(filter(kinkajou_counts_region, Region == "2")$Minutes_Per_Hour), digits = 2)`), and `r round(mean(filter(kinkajou_counts_region, Region == "3")$Minutes_Per_Hour), digits = 2)` minutes/hour (sd = `r round(sd(filter(kinkajou_counts_region, Region == "3")$Minutes_Per_Hour), digits = 2)`), respectively.
+
+Flower density trended upward over the course of the study, while kinkajou residence times were highly variable night-to-night, with a drop-off at the end of the study period (Figure 2). There were no immediately apparent differences between regions in these trends.
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6, fig.height = 4, fig.cap = "Changes in kinkajou residence and flower density across tree crown regions for the full study period. All values are given in terms of percent change from initial values in each region for unbiased visual comparison between variables.", fig.scap = "Changes in kinkajou residence and flower density.", out.extra=''}
+
+ggplot(combined_data_region %>% 
+                    pivot_longer(cols = c(Growth.x, Growth.y), names_to = "Measure", values_to = "Growth") %>% 
+                    filter(!is.na(Growth)),
+                  aes(x = Study_night, y = Growth, color = Measure)) +
+  geom_line(aes(linetype = Measure)) +
+  geom_point() +
+  facet_wrap(~ Region, labeller = "label_both") +
+  scale_color_manual(name = "Measure:", labels = c("Flower Density","Kinkajou-Minutes"), values = c("green", "black")) +
+  scale_linetype_manual(name = "Measure:", labels = c("Flower Density","Kinkajou-Minutes"), values = c("solid", "dashed")) +
+  #theme_classic()+
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5),
+        plot.margin = unit(c(1,1,1,0), "cm")) +
+  labs(#title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black) \n and balsa flower counts (solid) over study period",
+    y = "Change (%)",
+    x = "Study Night",
+    title = "Regional Changes in Flower Density and Kinkajou Residence")
+
+```
+
+### Comparing Kinkajou Residence Time and Regional Flower Densities
+
+```{r model1-assessment, include = FALSE}
+#run this chunk line-by-line to review diagnostics of Model 1
+load("../Results/residence_by_region_MCMCs_relative_density.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+m1_precis <- precis(residence_by_region_relative_density_stan_fit)
+precis(residence_by_region_relative_density_stan_fit)
+#plot(residence_by_region_relative_density_stan_fit) 
+#pairs(residence_by_region_relative_density_stan_fit, pars = c("ap_Region", "am_Region", "am", "ap", "bm_Average_Density", "bp_Average_Density", "bm_Relative_Density", "bp_Relative_Density"))
+
+```
+
+```{r gather-samples, include = FALSE, echo = FALSE, message=FALSE}
+samples_long <- residence_by_region_relative_density_stan_fit %>%
+  gather_draws(ap, am, bp_Average_Density, bm_Average_Density, bp_Relative_Density, bm_Relative_Density,
+               ap_sigma_night, am_sigma_night, ap_sigma_Region, am_sigma_Region, ap_Region[i], am_Region[i], ap_night[i], am_night[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               # ap_Region.1,
+               # ap_Region.2,
+               # ap_Region.3,
+               # am_Region.1,
+               # am_Region.2,
+               # am_Region.3,
+               # ap_night.1,
+               # ap_night.2,
+               # ap_night.3,
+               # ap_night.4,
+               # ap_night.5,
+               # ap_night.6,
+               # ap_night.7,
+               # ap_night.8,
+               # ap_night.9,
+               # ap_night.10,
+               # am_night.1,
+               # am_night.2,
+               # am_night.3,
+               # am_night.4,
+               # am_night.5,
+               # am_night.6,
+               # am_night.7,
+               # am_night.8,
+               # am_night.9,
+               # am_night.10
+               ) %>% 
+  mutate(Source = "Empirical")
+
+posterior_above_zero_m1 <- samples_long %>% group_by(.variable) %>% summarize(above = mean(.value > 0))
+```
+
+```{r model1-simulations-assessment, include = FALSE}
+#run this chunk line-by-line to review diagnostics of Model 1
+load("../Results/residence_by_region_sim_MCMCs_relative_density.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+m1_sim_precis <- precis(residence_by_region_relative_density_sim_stan_fit)
+#precis(residence_by_region_relative_density_sim_stan_fit)
+#plot(residence_by_region_relative_density_stan_fit) 
+pairs(residence_by_region_relative_density_sim_stan_fit, pars = c("ap_Region", "am_Region", "am", "ap", "bm_Average_Density", "bp_Average_Density", "bm_Relative_Density", "bp_Relative_Density"))
+
+```
+
+```{r gather-samples-sim, include = FALSE, echo = FALSE, message = FALSE}
+sim_samples_long <- residence_by_region_relative_density_sim_stan_fit %>%
+  gather_draws(ap, am, bp_Average_Density, bm_Average_Density, bp_Relative_Density, bm_Relative_Density,
+               ap_sigma_night, am_sigma_night, ap_sigma_Region, am_sigma_Region,am_Region[i], ap_night[i], am_night[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               # ap_Region.1,
+               # ap_Region.2,
+               # ap_Region.3,
+               # am_Region.1,
+               # am_Region.2,
+               # am_Region.3,
+               # ap_night.1,
+               # ap_night.2,
+               # ap_night.3,
+               # ap_night.4,
+               # ap_night.5,
+               # ap_night.6,
+               # ap_night.7,
+               # ap_night.8,
+               # ap_night.9,
+               # ap_night.10,
+               # am_night.1,
+               # am_night.2,
+               # am_night.3,
+               # am_night.4,
+               # am_night.5,
+               # am_night.6,
+               # am_night.7,
+               # am_night.8,
+               # am_night.9,
+               # am_night.10
+               ) %>% 
+  mutate(Source = "Simulated")
+
+posterior_above_zero_m1_sim <- sim_samples_long %>% group_by(.variable) %>% summarize(above = mean(.value > 0))
+```
+
+To statistically analyze the relationship between flower density and kinkajou residence time, we built a model to estimate the residence time in a given region during an observation period in terms of 1) the probability at least one kinkajou entered the region and 2) the expected residence time in the region if at least one kinkajou visited, and as a function of 1) the density of flowers in the whole tree crown during that observation period, 2) the flower density difference of the given region, relative to the full three crown, 3) the region in question, and 4) the night of the observation period (Model 1). Assessment of MCMCs used to estimate parameter values in all models revealed strong mixing and convergence, meaning we are reasonably confident that estimates of our model parameters in the posterior distributions accurately represent the range of most-likely values.
+
+Neither the total flower density in the tree crown nor the relative flower density of a region had a clear effect on the probability that at least one kinkajou entered the region in question. The mean estimate of $p_0$, or the intercept of the logit-probability of a kinkajou visiting an "average" region, was `r round(m1_precis["ap", "mean"], digits = 2)` (89% CI [`r round(m1_precis["ap", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). The effect of absolute flower density in the full tree crown on this probability was greater than zero in `r posterior_above_zero_m1 %>% filter(.variable == "bp_Average_Density") %>% .$above %>% round(digits = 2) * 100`% of the posterior samples ($\bar\beta_1$ = `r round(m1_precis["bp_Average_Density", "mean"], digits = 2)`; 89% CI [`r round(m1_precis["bp_Average_Density", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]), offering no clear evidence of an effect. The effect of the difference in flower density between the given region and the tree-crown average on the probability of a kinkajou arriving was greater than zero in  `r posterior_above_zero_m1 %>% filter(.variable == "bp_Relative_Density") %>% .$above %>% round(digits = 2) * 100`% of the posterior samples ($\bar\beta_2$ = `r round(m1_precis["bp_Relative_Density", "mean"], digits = 2)`; 89% CI [`r round(m1_precis["bp_Relative_Density", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]).
+
+Flower density had clearer effects on residence time in a region when at least one kinkajou visited. The mean estimate of $\mu_0$, or the intercept of the log-residence-time in a region (when not zero), was `r round(m1_precis["am", "mean"], digits = 2)` (89% CI [`r round(m1_precis["am", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). In other words, our model predicts that if at least one kinkajou visited a region with no flowers, we could expect a residence time of approximately thirteen kinkajou-minutes in the region that night. The effect of absolute flower density in the full tree crown on expected kinkajou-minutes ($\beta_3$) was greater than zero in only `r posterior_above_zero_m1 %>% filter(.variable == "bm_Average_Density") %>% .$above %>% round(digits = 2) * 100`% of the posterior samples ($\bar\beta_3$ = `r round(m1_precis["bm_Average_Density", "mean"], digits = 2)`; 89% CI [`r round(m1_precis["bm_Average_Density", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). This means that, contrary to our initial prediction, if at least one kinkajou visited a region when both the regional flower density and full tree crown density were at the study average density of `r round(mean(flower_counts$Density), digits = 2)` flowers/10m^2^, our model predicts a residence time of `r round(exp(m1_precis["am", "mean"] + mean(flower_counts$Density) * m1_precis["bm_Average_Density", "mean"]), digits = 2)` kinkajou minutes, and we can be moderately confident that there is a true negative relationship between the total density of flowers in the tree and the time that kinkajous spent in any given region. The effect of the difference in flower density between the given region and the tree-crown average on expected residence time ($\beta_4$) was greater than zero in `r posterior_above_zero_m1 %>% filter(.variable == "bm_Relative_Density") %>% .$above %>% round(digits = 2) * 100`% of the posterior samples ($\bar\beta_4$ = `r round(m1_precis["bm_Relative_Density", "mean"], digits = 2)`; 89% CI [`r round(m1_precis["bm_Relative_Density", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). We thus have weak-to-moderate evidence that kinkajous spend more time in regions of the tree crown that have greater flower density that other regions during that observation period (and this is not simply due to kinkajous spending more time in regions that, on average, have greater flower density.)
+
+Comparisons between the empirical data and simulated data reveal that as the flower density of a region increases relative to the rest of the tree, kinkajous visit that region less frequently - but stay longer - than would be expected if the kinkajous' patterns of movement through the tree were driven by a memory-less process agnostic to current flower distributions. We observe this because posterior distributions of Model 1 coefficients, when fitted to the simulated data, reflect the posterior distributions when fitted to empirical data, except in the cases of $\beta_2$ and $\beta_4$ (Figure 3). Whereas the majority of estimates for $\beta_2$ (effect of relative regional flower density of arrival probability) are negative for the empirical data, most estimates are positive for the simulated data ($\bar\beta_{2sim}$ = `r round(m1_sim_precis["bp_Relative_Density", "mean"], digits = 2)`; 89% CI [`r round(m1_sim_precis["bp_Relative_Density", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). Conversely, the majority of estimates for $\beta_4$ (effect of relative regional flower density on stay duration) were positive for the empirical data, but most estimates were negative for the simulated data ($\bar\beta_{4sim}$ = `r round(m1_sim_precis["bm_Relative_Density", "mean"], digits = 2)`; 89% CI [`r round(m1_sim_precis["bm_Relative_Density", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). Interpreting these differences requires careful consideration of why the real data are different from simulations. The simulations, by averaging transition rates between regions across the study, would fail to capture the dynamics of kinkajous moving through the tree based on where they have already been, or switching between states of movement and residency. The simulations maintain, however, the time and location that kinkajous first entered the tree. Thus, the somewhat surprising finding that flower density positively affects the probability of simulated kinkajous entering a region must reflect that real kinkajous tend to initially enter higher density regions and then sample the full tree; simulated kinkajous, by contrast, are more likely to exit the tree without first visiting the lower density regions.  At the same time, an overall tendency to move out of the initial-entry region for sampling, captured by the negative relationship between flower density and residence time for simulated kinkajous, may be opposed in real kinkajous that stay longer only when that region actually has greater flower density. For both parameters, however, the bulk of posterior estimates from the simulated data remain within the credible interval of estimates from the real data, preventing strong conclusions from being made.
+
+```{r plot-coefficient-posterior-distributions, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6, fig.height = 5, fig.cap = "Posterior distributions of selected parameters from Model 1, which identifies the impact of regional flower densities on kinkajou residence time. $\\beta_1$ and $\\beta_2$ give the effect of one flower/10m$^2$ in the whole tree and a given region, respectively, on the logit-probability that a kinkajou enters the given region during the observation period. $\\beta_3$ and $\\beta_4$ give the effect of one flower/10m$^2$ in the whole tree and a given region, respectively, on the expected log(minutes/hour) that kinkajous will spend in the given region during the observation period.", fig.scap = "Posterior distributions of selected parameters from Model 1", out.extra=''}
+
+
+#determine and plot average predictions with 89% CIs
+rbind(samples_long, sim_samples_long) %>% 
+  mutate(Source = factor(Source, levels = c("Simulated", "Empirical"))) %>% 
+  filter(!(str_detect(.variable, "night") | str_detect(.variable, "Region"))) %>% 
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable, height = stat(density), fill = Source, color = Source), stat = "density", scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945), alpha = 0.2) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  xlim(-6, 6) +
+  labs(title = "Posterior Distributions of Key Parameters from Model 1",
+       x = "Value",
+       y = "Parameter") +
+  scale_y_discrete(limits = c("bm_Relative_Density", "bm_Average_Density", "bp_Relative_Density", "bp_Average_Density", "am", "ap"),
+                   labels = c(bquote(beta[4]), bquote(beta[3]), bquote(beta[2]), bquote(beta[1]), bquote(mu[0]),  bquote("p"[0]))) +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.margin = margin(t = 1, unit = "cm")) +
+  scale_fill_discrete(type = c("light grey", alpha("#116656", 0.5))) +
+  scale_color_discrete(type = c("grey", "#116656"))
+```
+
+### Kinkajou Decision Making
+
+To analyze whether kinkajous chose to move into regions with greater flower density, we built a second model to estimate the probability that a transition between regions was a "success", meaning the kinkajou moved into the region with greater flower density, as a function of 1) the transition the kinkajou made (e.g. Region 1 to Region 2) and 2) the difference in flower density between the region the kinkajou entered (Region 2, in previous example) and the region it did not (Region 3, in previous example). We observed `r nrow(drop_na(decisions))` transitions by kinkajous between tree crown regions on nights for which flower density data were also available. Of these transitions, `r sum(decisions$Success_Observed, na.rm = TRUE)` (`r round(mean(decisions$Success_Observed, na.rm = TRUE), digits = 2) * 100`%) were to the available region with greater flower density. We found that success was driven primarily by the transition being made, meaning that - although kinkajous were more often successful than not - we can not say with any confidence whether this was due to a preference for moving into more flower dense regions, or a tendency to move into the central region which, more often than not, happened to be the most flower-dense (Figure 4A).
+
+```{r decision posteriors, include = FALSE}
+load("../Results/decision_model.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+m2_precis <- precis(decision_model)
+#precis(decision_model)
+#plot(decision_model, depth = 2)
+#traceplot(decision_model)
+pairs(decision_model, pars = c("ap_From", "ap", "bp_flowers", "ap_sigma_From"))
+pairs(decision_model, pars = c("ap_Preferred", "ap", "bp_flowers", "ap_sigma_Preferred"))
+pairs(decision_model, pars = c("ap_sigma_From", "ap_sigma_Condition", "ap_sigma_Preferred"))
+
+```
+
+```{r decision_samples_gather, include = FALSE, echo = FALSE, message = FALSE}
+decision_samples_long <- decision_model %>%
+  gather_draws(ap, bp_flowers, ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition, ap_From[i], ap_Preferred[i], ap_Success_Condition[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               #ap_From.1,ap_From.2,ap_From.3,
+               #ap_Preferred.1, ap_Preferred.2, ap_Preferred.3,
+               #ap_Success_Condition.1, ap_Success_Condition.2, ap_Success_Condition.3, ap_Success_Condition.4, ap_Success_Condition.5, ap_Success_Condition.6
+               ) %>% 
+  mutate(Model = "Model 2")
+```
+
+```{r decision-success-predictions, include = FALSE, echo = FALSE, message = FALSE}
+
+#Create new data with regular values across all variables of interest, which will be used to simulate marginal posterior estimates of p
+decision_predictions_new <- data.frame(density_diff = rep(seq(0, 0.8, by = 0.05), times = 6),
+                                       Success_Condition = factor(rep(1:6, each = length(seq(0,0.8,by = 0.05))))) %>% 
+  mutate(From = sapply(as.numeric(Success_Condition), switch, 1, 1, 2, 2, 3, 3), #see first element of each chr in levels of Success_Condition
+         Preferred = sapply(as.numeric(Success_Condition), switch, 2, 3, 1, 3, 1, 2)) #see second element of each chr in levels of Success_Condition
+
+#use link function to get p from new data and posterior parameter estimates conditional on random effects
+decision_predictions_link <- link(decision_model, decision_predictions_new)
+decision_predictions_df_m2 <- decision_predictions_new %>% 
+  mutate(pp_success = apply(X = decision_predictions_link, MARGIN = 2, FUN = mean), 
+         CI_lower = apply(X = decision_predictions_link, MARGIN = 2, FUN = PI)[1,], 
+         CI_upper = apply(X = decision_predictions_link, MARGIN = 2, FUN = PI)[2,],
+         Success_Condition = sapply(as.numeric(Success_Condition), switch, "1_2", "1_3", "2_1", "2_3", "3_1", "3_2"),
+         Model = "Model 2")
+
+#We also want to get estimates marginalized over random effects. We use the full posterior sample to simulate random effects using the correlation structure of the posterior
+post_m2 <- extract.samples(decision_model)
+
+#Simulate new random effects using posterior estimates of random effect variances
+RE_sims_m2 <- list(ap_Success_Condition = rnorm(n = nrow(post_m2$ap_Success_Condition)*ncol(post_m2$ap_Success_Condition), 
+                         mean = 0,
+                         sd = post_m2$ap_sigma_Condition) %>% #this vector of standard deviations is recycled, which we use to ensure that each column of the matrix we create with the next line was generated using random draws with the ap_sigma_choice value from a single posterior draw
+  matrix(nrow = nrow(post_m2$ap_Success_Condition), ncol = ncol(post_m2$ap_Success_Condition)),
+                   ap_From = rnorm(n = nrow(post_m2$ap_From)*ncol(post_m2$ap_From), 
+                         mean = 0,
+                         sd = post_m2$ap_sigma_From) %>% 
+  matrix(nrow = nrow(post_m2$ap_From), ncol = ncol(post_m2$ap_From)),
+                   ap_Preferred = rnorm(n = nrow(post_m2$ap_Preferred)*ncol(post_m2$ap_Preferred), 
+                         mean = 0,
+                         sd = post_m2$ap_sigma_Preferred) %>% 
+  matrix(nrow = nrow(post_m2$ap_Preferred), ncol = ncol(post_m2$ap_Preferred)))
+
+#Generate new predictions with link function, as we did for conditional predictions
+marginal_decision_predictions_link_m2 <- link(decision_model, n = 1000, data = decision_predictions_new, post = modifyList(post_m2, RE_sims_m2))
+
+marginal_predictions <- decision_predictions_new %>% 
+  mutate(pp_success = apply(X = marginal_decision_predictions_link_m2, MARGIN = 2, FUN = mean), 
+         CI_lower = apply(X = marginal_decision_predictions_link_m2, MARGIN = 2, FUN = PI)[1,], 
+         CI_upper = apply(X = marginal_decision_predictions_link_m2, MARGIN = 2, FUN = PI)[2,],
+         Success_Condition = sapply(as.numeric(Success_Condition), switch, "1_2", "1_3", "2_1", "2_3", "3_1", "3_2"),
+         Model = "Model 2")
+                                      
+```
+
+
+```{r simulated-decision-posteriors, include = FALSE}
+load(file = "../Results/decision_model_sim.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+m2_precis_sim <- precis(decision_model_sim)
+#precis(decision_model_sim)
+#plot(decision_model, depth = 2)
+#traceplot(decision_model)
+pairs(decision_model_sim, pars = c("ap_From", "ap", "bp_flowers", "ap_sigma_From"))
+pairs(decision_model_sim, pars = c("ap_Preferred", "ap", "bp_flowers", "ap_sigma_Preferred"))
+pairs(decision_model_sim, pars = c("ap_sigma_From", "ap_sigma_Condition", "ap_sigma_Preferred"))
+```
+
+```{r decision_samples_gather_sim, include = FALSE}
+decisions_sim_long <- map_dfr(decisions_sim, ~ .x, .id = "Simulation")
+
+decision_sim_samples_long <- decision_model_sim %>%
+  gather_draws(ap, bp_flowers, ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition, ap_From[i], ap_Preferred[i], ap_Success_Condition[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               #ap_From.1,ap_From.2,ap_From.3,
+               #ap_Preferred.1, ap_Preferred.2, ap_Preferred.3,
+               #ap_Success_Condition.1, ap_Success_Condition.2, ap_Success_Condition.3, ap_Success_Condition.4, ap_Success_Condition.5, ap_Success_Condition.6
+               ) %>%
+  mutate(Model = "Model 2")
+```
+
+Specifically, kinkajous typically moved from Regions 1 and 3 into Region 2 and therefore success rates are high when Region 2 has greater flower density, but lower when it is not the more flower dense region. In a small majority of posterior estimates, the probability of success also increases as the magnitude of difference in flower density between regions under consideration increases, but the range of this posterior distribution is wide ($\bar{\beta_5}$ = `r round(m2_precis["bp_flowers", "mean"], digits = 2)`, 89% CI = [`r round(m2_precis["bp_flowers", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). This amounts to very weak evidence that if choosing between regions with a greater differential in flower density, kinkajous are more likely to go to the more dense region. Overall, however, when the probability of success is marginalized over conditions (i.e. we control for repeated measures across nights and specific transitions), the credible interval ranges from nearly zero to nearly one across all levels of flower density difference (Figure 4C); i.e. we have no ability to determine how likely a kinkajou is to choose the more flower dense region without knowing specifically where it is, where it ought to go, and how frequently it makes that transition overall.
+Comparisons of empirical and simulated data offer little additional insight. When Model 2 was fit to the simulated data, in which kinkajous moved between regions with probabilities equal to full-study averages in the empirical data, the posterior distribution of estimated success probability was nearly identical to estimates from the empirical model fit (Figure 4B). The posterior distribution of estimated effects of flower density difference on kinkajou success rate for the simulated data was much narrower than the empirical model fit, but still centered near zero ($\bar{\beta}_{5sim}$ = `r round(m2_precis_sim["bp_flowers", "mean"], digits = 2)`, 89% CI = [`r round(m2_precis_sim["bp_flowers", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). Comparing the posterior distributions of empirically fit model parameter estimates to the posterior distributions of model parameters fit to simulated data (rather than comparing to zero) accounts for potential contingencies between observed flower distributions and apparent patterns of decision making that might arise if kinkajous' typical rates of movement through the tree were driven by a memory-less process agnostic to current flower distributions. In this case, such contingencies do not appear to be a concern. 
+
+### Analyzing the Role of Memory in Decision Making
+```{r expectation decision posteriors, include = FALSE}
+load("../Results/decision_model_expectation.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(decision_model_expectation)
+m3_precis <- precis(decision_model_expectation)
+#plot(decision_model_expectation)
+#traceplot(decision_model)
+pairs(decision_model_expectation, pars = c("ap_From", "ap", "bp_flowers", "ap_sigma_From"))
+pairs(decision_model_expectation, pars = c("ap_Preferred", "ap", "bp_flowers", "ap_sigma_Preferred"))
+pairs(decision_model_expectation, pars = c("ap_sigma_From", "ap_sigma_Condition", "ap_sigma_Preferred"))
+```
+
+```{r decision-expectation-samples-gather, include = FALSE}
+expectation_decision_samples_long <- decision_model_expectation %>%
+  gather_draws(ap, bp_flowers, ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition, ap_From[i], ap_Preferred[i], ap_Success_Condition[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               #ap_From.1,ap_From.2,ap_From.3,
+               #ap_Preferred.1, ap_Preferred.2, ap_Preferred.3,
+               #ap_Success_Condition.1, ap_Success_Condition.2, ap_Success_Condition.3, ap_Success_Condition.4, ap_Success_Condition.5, ap_Success_Condition.6
+               ) %>%
+  mutate(Model = "Model 3")
+```
+
+```{r expectation-decision-sim-posteriors, include = FALSE}
+load(file = "../Results/expectation_decision_model_sim.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(expectation_decision_model_sim)
+m3_precis <- precis(expectation_decision_model_sim)
+#plot(decision_model_expectation)
+pairs(expectation_decision_model_sim, pars = c("ap_From", "ap", "bp_flowers", "ap_sigma_From"))
+pairs(expectation_decision_model_sim, pars = c("ap_Preferred", "ap", "bp_flowers", "ap_sigma_Preferred"))
+pairs(expectation_decision_model_sim, pars = c("ap_sigma_From", "ap_sigma_Condition", "ap_sigma_Preferred"))
+```
+
+```{r decision-expectation-sim-samples-gather, include = FALSE}
+expectation_decision_sim_samples_long <- expectation_decision_model_sim %>%
+  gather_draws(ap, bp_flowers, ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition,ap_From[i], ap_Preferred[i], ap_Success_Condition[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               #ap_From.1,ap_From.2,ap_From.3,
+               #ap_Preferred.1, ap_Preferred.2, ap_Preferred.3,
+               #ap_Success_Condition.1, ap_Success_Condition.2, ap_Success_Condition.3, ap_Success_Condition.4, ap_Success_Condition.5, ap_Success_Condition.6
+               ) %>%
+  mutate(Model = "Model 3")
+```
+
+```{r decision-expectation-success-predictions, include = FALSE}
+
+decision_predictions_new_m3 <- data.frame(density_diff = rep(seq(0, 0.8, by = 0.05), times = 6),
+                                      Success_Condition = factor(rep(1:6, each = length(seq(0,0.8,by = 0.05))))) %>% 
+  mutate(From = sapply(as.numeric(Success_Condition), switch, 1, 1, 2, 2, 3, 3), #see first element of each chr in levels of Success_Condition
+         Preferred = sapply(as.numeric(Success_Condition), switch, 2, 3, 1, 3, 1, 2)) #see second element of each chr in levels of Success_Condition
+decision_predictions_link_m3 <- link(decision_model_expectation, decision_predictions_new_m3)
+decision_predictions_df_m3 <- decision_predictions_new_m3 %>% 
+  mutate(pp_success = apply(X = decision_predictions_link_m3, MARGIN = 2, FUN = mean), 
+         CI_lower = apply(X = decision_predictions_link_m3, MARGIN = 2, FUN = PI)[1,], 
+         CI_upper = apply(X = decision_predictions_link_m3, MARGIN = 2, FUN = PI)[2,],
+         Success_Condition = sapply(as.numeric(Success_Condition), switch, "1_2", "1_3", "2_1", "2_3", "3_1", "3_2"),
+         Model = "Model 3")
+
+decision_predictions_df <- rbind(decision_predictions_df_m2, decision_predictions_df_m3)
+
+#We also want to get estimates marginalized over random effects. We use the full posterior sample to simulate random effects using the correlation structure of the posterior
+post_m3 <- extract.samples(decision_model_expectation)
+
+#Simulate new random effects using posterior estimates of random effect variances
+RE_sims_m3 <- list(ap_Success_Condition = rnorm(n = nrow(post_m3$ap_Success_Condition)*ncol(post_m3$ap_Success_Condition), 
+                         mean = 0,
+                         sd = post_m3$ap_sigma_Condition) %>% #this vector of standard deviations is recycled, which we use to ensure that each column of the matrix we create with the next line was generated using random draws with the ap_sigma_choice value from a single posterior draw
+  matrix(nrow = nrow(post_m3$ap_Success_Condition), ncol = ncol(post_m3$ap_Success_Condition)),
+                   ap_From = rnorm(n = nrow(post_m3$ap_From)*ncol(post_m3$ap_From), 
+                         mean = 0,
+                         sd = post_m3$ap_sigma_From) %>% 
+  matrix(nrow = nrow(post_m3$ap_From), ncol = ncol(post_m3$ap_From)),
+                   ap_Preferred = rnorm(n = nrow(post_m3$ap_Preferred)*ncol(post_m3$ap_Preferred), 
+                         mean = 0,
+                         sd = post_m3$ap_sigma_Preferred) %>% 
+  matrix(nrow = nrow(post_m3$ap_Preferred), ncol = ncol(post_m3$ap_Preferred)))
+
+#Generate new predictions with link function, as we did for conditional predictions
+marginal_decision_predictions_link_m3 <- link(decision_model_expectation, n = 1000, data = decision_predictions_new_m3, post = modifyList(post_m3, RE_sims_m3))
+
+marginal_predictions <- decision_predictions_new_m3 %>% 
+  mutate(pp_success = apply(X = marginal_decision_predictions_link_m3, MARGIN = 2, FUN = mean), 
+         CI_lower = apply(X = marginal_decision_predictions_link_m3, MARGIN = 2, FUN = PI)[1,], 
+         CI_upper = apply(X = marginal_decision_predictions_link_m3, MARGIN = 2, FUN = PI)[2,],
+         Success_Condition = sapply(as.numeric(Success_Condition), switch, "1_2", "1_3", "2_1", "2_3", "3_1", "3_2"),
+         Model = "Model 3") %>% 
+  rbind(marginal_predictions)
+
+decisions_long <- pivot_longer(decisions, cols = c(Success_Observed:Success_Expected, Success_Condition_Observed:Success_Condition_Expected), names_to = c(".value", "Model"), names_pattern = "^(.*)_([Observed | Expected])") %>%
+  mutate(Model = sapply(as.numeric(factor(Model)), switch, "Model 3", "Model 2")) #confirmed correct assignment of names 
+```
+
+```{r model comparison, include = FALSE}
+#not valid for models fit to different observations, no longer included
+m2_m3_compare <- rethinking::compare(decision_model, decision_model_expectation)
+plot(m2_m3_compare)
+```
+
+```{r plot_decision_success_predictions, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6.25, fig.height = 5, fig.cap = "Each panel depicts the observed 'successes' and modelled success probability of kinkajou decisions for a specific condition (e.g. Kinkajou in Region 1, Success in Region 2) relative to differences in flower density between regions. Observed successes and failures of kinkajou decisions in regard to selecting the tree crown region with greater flower density at the moment (Model 2) or selecting the tree crown region with the greater historical flower density (Model 3) are depicted by lines along the top and bottom borders of each panel. These lines are jittered to avoid overplotting decisions that occured on the same night (and thus along the same flower density differences). Solid continuous lines in each panel represent the mean estimated probability of success in the respective model's posterior. Shaded areas inside the dotted lines represent the 89% posterior credible intervals of these probabilities."}
+
+
+
+decision_prediction_plot <- ggplot(data = decision_predictions_df, aes(x = density_diff, y = pp_success, color = Model)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper, fill = Model), alpha = 0.1, linetype = "dotted", linewidth = 0.5) +
+  #geom_jitter(data = decisions, aes(x = abs(relative_density_diff), y = as.numeric(Success), color = factor(From_To)), shape = '|', size = 3, height = 0, width = 0.02) +
+  
+  geom_rug(data = filter(decisions_long, Success == 1, Model == "Model 2"), aes(x = abs(relative_density_diff), y = 0), color = "#403891", sides = "t", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc")) +
+  
+  geom_rug(data = filter(decisions_long, Success == 0, Model == "Model 2"), aes(x = abs(relative_density_diff), y = 0), color = "#403891", sides = "b", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc")) +
+  
+  geom_rug(data = filter(decisions_long, Success == 1, Model == "Model 3"), aes(x = abs(expected_density_diff), y = 0), color = "#f9a242", sides = "t", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc"), outside = TRUE) +
+  
+  geom_rug(data = filter(decisions_long, Success == 0, Model == "Model 3"), aes(x = abs(expected_density_diff), y = 0), color = "#f9a242", sides = "b", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc"), outside = TRUE) +
+  
+scale_fill_discrete(type = c("#403891", "#f9a242")) +
+  scale_color_discrete(type = c("#403891", "#f9a242")) +
+  facet_wrap(~Success_Condition, strip.position = "right", labeller = labeller(Success_Condition = c("1_2" = "Reg 1 -> 2",
+                                                       "1_3" = "Reg 1 -> 3",
+                                                       "2_1" = "Reg 2 -> 1",
+                                                       "2_3" = "Reg 2 -> 3",
+                                                       "3_1" = "Reg 3 -> 1",
+                                                       "3_2" = "Reg 3 -> 2"))) +
+  theme_classic() +
+  coord_cartesian(clip = "off") +
+  ylim(0,1) + #create space for rug
+  scale_x_continuous(breaks = c(0.2, 0.4, 0.6)) +
+  scale_y_continuous(breaks = c(0.00, 0.25, 0.50, 0.75, 1.00),
+                     expand = c(0.2,0,0.2,0)) +
+  labs(x = expression("Observered (Model 2) or Average (Model 3) Density Difference (flowers/10m"^2*")"),
+       y = "Conditional Probability of Success",
+       title = "A") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.margin = unit(1.5, "lines"),
+        #plot.title = element_blank(),
+        plot.title = element_text(size = 24, hjust = -0.05),
+        legend.position = "bottom",
+        legend.margin = margin(t = -0.2, b = -0.2, unit = "cm"),
+        plot.margin = margin(t = 0.5, b = 0.5, unit = "cm"))
+
+print(decision_prediction_plot)
+```
+
+When evaluating kinkajous' transitions with regard to the average desntiy of flowers on all previous nights (Model 3), the probability of success also varied significantly by the transition being made, and along the same lines as Model 2 (Figure 4A). Of the `r nrow(drop_na(decisions))` transition observed, `r sum(decisions$Success_Expected, na.rm = TRUE)` (`r round(mean(decisions$Success_Expected, na.rm = TRUE), digits = 2) * 100`%) were to the region that had a higher average density of flowers on previously monitored nights. Though this success rate is coincidentally identical to that of Model 2, it was not the same set of transitions that counted as success in the two models: only `r sum(decisions$Success_Observed == 1 & decisions$Success_Expected ==1, na.rm = TRUE)` transitions were to a region that had both the higher density of flowers that night, and on average over previous nights. There was very little variation in the magnitude of average historical density difference between regions (`r paste("mean = ", round(mean(decisions$expected_density_diff, na.rm = TRUE), digits = 2), ", sd = ", round(sd(decisions$expected_density_diff, na.rm = TRUE), digits = 2))`), which likely accounts for the greater degree of uncertainty for estimates of the effect of average previous density on success, relative to that of current density. What variation did exist did not have a notable impact on the decisions of kinkajous. ($\bar{\beta_6}$ = `r round(m3_precis["bp_flowers", "mean"], digits = 2)`, 89% CI = [`r round(m3_precis["bp_flowers", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). This holds true when Model 3 was fit to the simulated data as well (Figure 4B). As with the difference in current flower density, the estimated probability of a kinkajou moving to the historically more flower dense region varies considerably by conditions; without knowing which region the kinkajou is currently in and which of the other regions was historically more flower dense, we are unable to predict the kinkajous' probability of moving to the historically more flower dense region (Figure 4C).
+
+```{r visualize-marginal-predictions-test, include =FALSE}
+#This plot is a check to make sure generation of posterior predictive intervals marginalized over transitions  has produced expected results, i.e. that simulating random variance across transitions removes a consistent region effect.
+ggplot(data = marginal_predictions, aes(x = density_diff, y = pp_success, color = Model)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper, fill = Model), alpha = 0.05, linetype = "dotted", linewidth = 0.5) +
+
+  geom_rug(data = filter(decisions_long, Success == 1, Model == "Model 2"), aes(x = abs(relative_density_diff), y = 0), color = "#403891", sides = "t", position = position_jitter(h = 0, w = 0.04), length = unit(0.05, "npc")) +
+  
+  geom_rug(data = filter(decisions_long, Success == 0, Model == "Model 2"), aes(x = abs(relative_density_diff), y = 0), color = "#403891", sides = "b", position = position_jitter(h = 0, w = 0.04), length = unit(0.05, "npc")) +
+  
+  geom_rug(data = filter(decisions_long, Success == 1, Model == "Model 3"), aes(x = abs(expected_density_diff), y = 0), color = "#f9a242", sides = "t", position = position_jitter(h = 0, w = 0.04), length = unit(0.05, "npc"), outside = TRUE) +
+  
+  geom_rug(data = filter(decisions_long, Success == 0, Model == "Model 3"), aes(x = abs(expected_density_diff), y = 0), color = "#f9a242", sides = "b", position = position_jitter(h = 0, w = 0.04), length = unit(0.05, "npc"), outside = TRUE) +
+  
+  scale_fill_discrete(type = c("#403891", "#f9a242")) +
+  scale_color_discrete(type = c("#403891", "#f9a242")) +
+  facet_wrap(~Success_Condition, strip.position = "right", labeller = labeller(Success_Condition = c("1_2" = "Reg 1 -> 2",
+                                                       "1_3" = "Reg 1 -> 3",
+                                                       "2_1" = "Reg 2 -> 1",
+                                                       "2_3" = "Reg 2 -> 3",
+                                                       "3_1" = "Reg 3 -> 1",
+                                                       "3_2" = "Reg 3 -> 2"))) +
+  theme_classic() +
+  coord_cartesian(clip = "off") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.margin = unit(1.5, "lines"),
+        plot.title = element_text(margin = margin(b = 10))) +
+  ylim(0,1) +
+  scale_x_continuous(breaks = c(0.2, 0.4, 0.6)) +
+  labs(x = expression("Observered (Model 2) or Average (Model 3) Density Difference (flowers/10m"^2*")"),
+       y = "Predicted Probability of Success",
+       title = "Kinkajou Decisions Relative to Current and Previous Regional Differences in Flower Density")
+```
+
+```{r visualize-marginal-predictions, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height = 5, fig.cap = "Posterior Predictions of Probability Success Marginal to Regional Random Effects"}
+#Having confirmed marginalization works identically across groups, above, we plot the marginalize predictions using a single factor level
+marginal_decision_prediction_plot <- ggplot(data = filter(marginal_predictions, Success_Condition == "1_2"), aes(x = density_diff, y = pp_success, color = Model)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper, fill = Model), alpha = 0.05, linetype = "dotted", linewidth = 0.5) +
+  
+  geom_rug(data = filter(decisions_long, Success == 1, Model == "Model 2"), aes(x = abs(relative_density_diff), y = 0), color = "#403891", sides = "t", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc")) +
+  
+  geom_rug(data = filter(decisions_long, Success == 0, Model == "Model 2"), aes(x = abs(relative_density_diff), y = 0), color = "#403891", sides = "b", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc")) +
+  
+  geom_rug(data = filter(decisions_long, Success == 1, Model == "Model 3"), aes(x = abs(expected_density_diff), y = 0), color = "#f9a242", sides = "t", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc"), outside = TRUE) +
+  
+  geom_rug(data = filter(decisions_long, Success == 0, Model == "Model 3"), aes(x = abs(expected_density_diff), y = 0), color = "#f9a242", sides = "b", position = position_jitter(h = 0, w = 0.04), length = unit(0.1, "npc"), outside = TRUE) +
+  
+  scale_fill_discrete(type = c("#403891", "#f9a242")) +
+  scale_color_discrete(type = c("#403891", "#f9a242")) +
+
+  theme_classic() +
+  coord_cartesian(clip = "off") +
+  
+  ylim(0,1) +
+  scale_x_continuous(breaks = c(0.2, 0.4, 0.6)) +
+    scale_y_continuous(breaks = c(0.00, 0.25, 0.50, 0.75, 1.00),
+                       expand = c(0.2,0,0.2,0)) +
+  labs(x = expression("Density Difference (flowers/10m"^2*")"),
+       y = "Marginal Probability \n of Success",
+       title = "C") +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.margin = margin(t = 1.5, b = 1.5, unit = "cm"),
+        plot.margin = margin(t = -0.2, r = 0.2, b = 0.5, l = 0.2, unit = "cm"),
+        plot.title = element_text(size = 24, hjust = -0.1, vjust = -1),
+        legend.position = "none")
+
+print(marginal_decision_prediction_plot)
+```
+
+```{r decision-samples2-plot, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6.5, fig.height = 7, fig.cap = "Posterior distributions of selected parameters from Models 2 & 3, which identifies the impact of  differences in regional flower densities on the transitions of kinkajous between regions. p~0~ is the logit-probability intercept of 'success' meaning that a kinkajou chooses the region in which greater flower density is observed (Model 2) or expected (Model 3). Subsequent posterior distributions give the adjustment to the expected probability of success given the transition that was made. The posterior distributions at the bottom give the estimated effect of the observed magnitude of difference in flower densities between regions on the probability of choosing the region with more flowers (Beta~5~, Model 2) and the estimated effect of the average previous difference in flower densities between regions on the probability of choosing the region expected to have more flowers (Beta~6~, Model 3). Vertical bars give the 89% Credible Interval of each posterior distribution."}
+#determine and plot average predictions with 89% CIs
+decision_posteriors_plot <- rbind(expectation_decision_samples_long, decision_samples_long) %>% 
+  mutate(Source = "Empirical") %>% 
+  rbind(mutate(
+    rbind(decision_sim_samples_long, expectation_decision_sim_samples_long), 
+    Source = "Simulated")
+  ) %>%
+  mutate(Source = factor(Source, levels = c("Simulated", "Empirical"))) %>%  #so empirical data are plotted in front
+  filter(.variable %in% c("ap", "bp_flowers")) %>% 
+  
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable, color = interaction(Source, Model, sep = ":") , fill = interaction(Source ,Model, sep = ":")), alpha = 0.7, size = 1.2, scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) +
+  facet_wrap(~Model) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  scale_y_discrete(limits = c("bp_flowers", "ap"), labels = c(bquote(paste(beta[5], " , ", beta[6], sep = " ")), bquote("p"[0])), expand = c(0,0.1)) +
+  xlim(c(-6,6)) +
+  theme_classic() +
+  scale_fill_discrete(type = c("#DDDED6","#403891", "#DDDED6", "#f9a242")) +
+  scale_color_discrete(type = c("black", "#403891", "black", "#f9a242")) +
+  labs(title = "B",
+       x = "Value",
+       y = "Parameter") +
+  theme(plot.title = element_text(size = 24, hjust = -0.11, vjust = -5),
+        legend.position = "None",
+        plot.margin = margin(t = -1, unit = "cm"))
+
+plot(decision_posteriors_plot)
+```
+
+#### Recursion Analysis
+
+```{r full_sequence_solo_transitions, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6.5, fig.height = 7, fig.cap = "Conditional Entropy levels for sequences of region visits by solitary foraging kinkajous. The x axis gives the conditional order of entropy measure, where 0 is the Shannon's entropy of the sequence. The black line is calculated from observed sequences and each red line represents the sequences from a single simulation"}
+get_entropy <- function(solo_visits) {
+  solo_transition_sequence <- solo_visits %>% group_by(sequence) %>% summarize(transitions = paste(rle(location)$values, collapse = ""))
+  solo_transition_sequence <- paste(solo_transition_sequence$transitions, collapse = "S") %>% strsplit(split = "")
+  sequence_entropy <- entropy(solo_transition_sequence[[1]]) #from entropy analysis code, loaded at top of markdown
+  names(sequence_entropy) <- factor(0:5)
+  return(sequence_entropy) 
+}
+
+empirical_entropy <- data.frame(Order = factor(0:5), Entropy = get_entropy(solo_visits), Source = "Empirical")
+reference1_entropy <- lapply(reference1_solo_visits, get_entropy) %>% map_dfr(~ .x, .id = "Simulation") %>% pivot_longer(cols = !Simulation, names_to = "Order", values_to = "Entropy")
+
+Entropy_plot <- ggplot(empirical_entropy, aes(x = Order, y = Entropy)) + 
+  geom_line(data = reference1_entropy, aes(group = Simulation), color = "black", alpha = 0.1) +
+  geom_line(aes(group = Source), color = "#29AF7F", size = 1.2) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 24, hjust = -0.05),
+        plot.margin = margin(l = 0.5, unit = "cm")) +
+  labs(title = "D",
+       y = "Conditional Entropy")
+
+print(Entropy_plot)
+```
+
+The adjusted conditional entropies of solo-movement sequences offer no evidence that the region a kinkajou came from influences the region it will go to next. We predicted that the empirical data will have a minimum conditional entropy at an order greater than or equal to 2, meaning that information about its last location will improve our ability to predict where it goes next, relative to having information only about its currently location. The second order conditional entropy (`r filter(empirical_entropy, Order == 2)$Entropy %>% round(digits = 3)`) is indeed slightly smaller than the first order conditional entropy (`r filter(empirical_entropy, Order == 1)$Entropy %>% round(digits = 3)`), but this reduction is not outside the range of variation in the simulated data, which uses a memory-less process (Figure 4D).
+
+```{r all-decision-models-plots, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6, fig.height = 6, fig.cap = "A) Posterior predictive probability of a kinkajou choosing the region with greater flower density, by success condition. Solid lines give the mean posterior estimate and dotted lines the 89\\% credible interval. B) Posterior distributions of select Model 2 and 3 parameters when fit to empirical (colored) and simulated (black) data. $p_0$ is the grand mean of the success probability, $\\beta_5$ and $\\beta_6$ are the linear regression coeffeicients for the flower density difference between regions at the moment of choice (Observed, Model 2),  and on previous nights (Average, Model 3). C) Posterior predictive probability of a kinkajou choosing the region with greater flower density, marginalized accross the estimated variances in condition-based adjustments to the intercept. D) Adjusted conditional entropy of location sequences in empirical (green) and simulated (black) data. 'Order' denotes the number of previous locations used to calculate entropy.", fig.scap = "Influence of memory on kinkajou decisions", out.extra=''}
+# multiplot(plotlist = list(decision_prediction_plot, marginal_decision_prediction_plot, decision_posteriors_plot, Entropy_plot), 
+#           layout = matrix(c(1,1,1,1,
+#                             1,1,1,1,
+#                             3,3,2,2,
+#                             3,3,4,4), ncol = 4, byrow = TRUE))
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(5, 2, heights = unit(c(0.6, 5, 5, 5, 4), "null"))))   
+grid.text("Asocial Predictors of Region Transitions by Kinkajous", gp=gpar(fontsize=14), vp = viewport(layout.pos.row = 1, layout.pos.col = 1:2))
+print(decision_prediction_plot, vp = viewport(layout.pos.row = 2:3, layout.pos.col = 1:2))         
+print(decision_posteriors_plot, vp = viewport(layout.pos.row = 4:5, layout.pos.col = 1))
+print(marginal_decision_prediction_plot, vp = viewport(layout.pos.row = 4, layout.pos.col = 2))
+print(Entropy_plot, vp = viewport(layout.pos.row = 5, layout.pos.col = 2))
+```
+
+### Social Behavior
+#### Region Transitions
+
+```{r social decision posteriors, include = FALSE}
+load("../Results/social_decision_model.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+m4_precis <- precis(social_decision_model)
+#plot(social_decision_model)
+pairs(social_decision_model, pars = c("ap_From", "ap", "bp_kinkajous", "ap_sigma_From"))
+pairs(social_decision_model, pars = c("ap_Preferred", "ap", "bp_kinkajous", "ap_sigma_Preferred"))
+pairs(social_decision_model, pars = c("ap_Success_Condition", "ap", "bp_kinkajous", "ap_sigma_Preferred"))
+pairs(social_decision_model, pars = c("ap_sigma_From", "ap_sigma_Condition", "ap_sigma_Preferred"))
+```
+
+```{r social_decision_samples_gather, include = FALSE}
+social_decision_samples_long <- social_decision_model %>%
+  gather_draws(ap, bp_kinkajous, ap_sigma_From, ap_sigma_Preferred, ap_sigma_Condition,ap_From[i], ap_Preferred[i], ap_Success_Condition[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               #ap_From.1,ap_From.2,ap_From.3,
+               #ap_Preferred.1, ap_Preferred.2, ap_Preferred.3,
+               #ap_Success_Condition.1, ap_Success_Condition.2, ap_Success_Condition.3, ap_Success_Condition.4, ap_Success_Condition.5, ap_Success_Condition.6
+               )
+
+posterior_above_zero_m4 <- social_decision_samples_long %>% group_by(.variable) %>% summarize(above = mean(.value > 0))
+```
+
+```{r social-decision-success-predictions, include = FALSE}
+
+decision_predictions_new_m5 <- data.frame(kinkajou_diff = rep(1:2, times = 6),
+                                      Success_Condition = factor(rep(1:6, each = 2))) %>% 
+  mutate(From = sapply(as.numeric(Success_Condition), switch, 1, 1, 2, 2, 3, 3), #see first element of each chr in levels of Success_Condition
+         Preferred = sapply(as.numeric(Success_Condition), switch, 2, 3, 1, 3, 1, 2)) #see second element of each chr in levels of Success_Condition
+decision_predictions_link_m5 <- link(social_decision_model, decision_predictions_new_m5)
+decision_predictions_df_m5 <- decision_predictions_new_m5 %>% 
+  mutate(pp_success = apply(X = decision_predictions_link_m5, MARGIN = 2, FUN = mean), 
+         CI_lower = apply(X = decision_predictions_link_m5, MARGIN = 2, FUN = PI)[1,], 
+         CI_upper = apply(X = decision_predictions_link_m5, MARGIN = 2, FUN = PI)[2,],
+         Success_Condition = sapply(as.numeric(Success_Condition), switch, "1_2", "1_3", "2_1", "2_3", "3_1", "3_2"),
+         Model = "Model 5")
+
+#We also want to get estimates marginalized over random effects. We use the full posterior sample to simulate random effects using the correlation structure of the posterior
+post_m5 <- extract.samples(social_decision_model)
+
+#Simulate new random effects using posterior estimates of random effect variances
+RE_sims_m5 <- list(ap_Success_Condition = rnorm(n = nrow(post_m5$ap_Success_Condition)*ncol(post_m5$ap_Success_Condition), 
+                         mean = 0,
+                         sd = post_m5$ap_sigma_Condition) %>% #this vector of standard deviations is recycled, which we use to ensure that each column of the matrix we create with the next line was generated using random draws with the ap_sigma_choice value from a single posterior draw
+  matrix(nrow = nrow(post_m5$ap_Success_Condition), ncol = ncol(post_m5$ap_Success_Condition)),
+                   ap_From = rnorm(n = nrow(post_m5$ap_From)*ncol(post_m5$ap_From), 
+                         mean = 0,
+                         sd = post_m5$ap_sigma_From) %>% 
+  matrix(nrow = nrow(post_m5$ap_From), ncol = ncol(post_m5$ap_From)),
+                   ap_Preferred = rnorm(n = nrow(post_m5$ap_Preferred)*ncol(post_m5$ap_Preferred), 
+                         mean = 0,
+                         sd = post_m5$ap_sigma_Preferred) %>% 
+  matrix(nrow = nrow(post_m5$ap_Preferred), ncol = ncol(post_m5$ap_Preferred)))
+
+#Generate new predictions with link function, as we did for conditional predictions
+marginal_decision_predictions_link_m5 <- link(social_decision_model, n = 1000, data = decision_predictions_new_m5, post = modifyList(post_m5, RE_sims_m5))
+
+marginal_predictions_m5 <- decision_predictions_new_m5 %>% 
+  mutate(pp_success = apply(X = marginal_decision_predictions_link_m5, MARGIN = 2, FUN = mean), 
+         CI_lower = apply(X = marginal_decision_predictions_link_m5, MARGIN = 2, FUN = PI)[1,], 
+         CI_upper = apply(X = marginal_decision_predictions_link_m5, MARGIN = 2, FUN = PI)[2,],
+         Success_Condition = sapply(as.numeric(Success_Condition), switch, "1_2", "1_3", "2_1", "2_3", "3_1", "3_2"),
+         Model = "Model 5")
+                                      
+```
+
+```{r social-decisions-predictions-plotting, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6.5, fig.height = 7, fig.cap = "Posterior predictive distributions of p from Model 4"}
+conditional_probability_social_plot <- ggplot(data = decision_predictions_df_m5, aes(x = kinkajou_diff, y = pp_success)) +
+  geom_line(linewidth = 1, color = "#116656") +
+  geom_ribbon(aes(ymin = CI_lower, ymax = CI_upper), color = "#116656", fill = "#EEEEEA", alpha = 0.1, linetype = "dotted", linewidth = 0.5) +
+  
+  geom_rug(data = filter(decisions, kinkajou_diff != 0,  Success_Social == TRUE) %>% mutate(Success_Condition = Success_Condition_Social), aes(x = abs(kinkajou_diff), y = 0), sides = "t", position = position_jitter(h = 0, w = 0.05), length = unit(0.1, "npc"), color = "#116656") +
+  
+  geom_rug(data = filter(decisions, kinkajou_diff != 0, Success_Social == FALSE) %>% mutate(Success_Condition = Success_Condition_Social), aes(x = abs(kinkajou_diff), y = 0), sides = "b", position = position_jitter(h = 0, w = 0.05), length = unit(0.1, "npc"), color = "#116656") +
+  facet_wrap(~Success_Condition, strip.position = "right", labeller = labeller(Success_Condition = c("1_2" = "Region 1 -> 2",
+                                                       "1_3" = "Region 1 -> 3",
+                                                       "2_1" = "Region 2 -> 1",
+                                                       "2_3" = "Region 2 -> 3",
+                                                       "3_1" = "Region 3 -> 1",
+                                                       "3_2" = "Region 3 -> 2"))) +
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.margin = unit(1.5, "lines"),
+        plot.title = element_text(size = 18, margin = margin(b = 10))) +
+  ylim(0,1) +
+  scale_x_continuous(breaks = c(1, 2)) +
+  labs(x = "Kinkajou Count Difference",
+       y = "Predicted Probability of Success",
+       title = "A")
+
+print(conditional_probability_social_plot)
+```
+As with flower density, we found no evidence that the distribution of other kinkajous in the tree crown influences the region transition choices of kinkajous. We observed `r nrow(filter(decisions, kinkajou_diff != 0))` transitions by kinkajous between tree crown regions during which the number of kinkajous in the available regions differed, `r nrow(filter(decisions, kinkajou_diff != 0, Success_Social == TRUE))` (`r round(nrow(filter(decisions, kinkajou_diff != 0, Success_Social == TRUE))/nrow(filter(decisions, kinkajou_diff != 0)), digits = 2) * 100`%) of which were to the region with more kinkajous. Unlike the distribution of flowers, the distribution of other kinkajous during observed decision making events was not regionally biased, and thus the transition made had relatively little impact on our "success" metric (moving to the region with more kinkajous). Unsurprisingly, given the small number of social-decision-making events observed, the posterior distributions of estimated success probability and its underlying coefficients are wide (Figure 5). Overall, kinkajous moved more frequently into the region with fewer kinkajous, but not more frequently than could be expected given random variation ($\bar{p}_0$ = `r round(m4_precis["ap", "mean"], digits = 2) %>% unlist(use.names = FALSE)`; 80% CI [`r round(m4_precis["ap", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]).
+
+```{r social_decisions_plotting, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height = 7, fig.cap = "Posterior distributions of selected parameters from Model 4, which identifies the impact of  differences in regional kinkajou counts on the transitions of kinkajous between regions. p~0~ is the logit-probability intercept of 'success' meaning that a kinkajou chooses the region currently occupied by more kinkajous. Subsequent posterior distributions give the adjustment to the expected probability of success given the transition that was made. The posterior distribution at the bottom (Beta~7~) gives the estimated effect of the observed magnitude of difference in kinkajou counts between regions on the probability of choosing the region with more kinkajous. Vertical bars give the 89% Credible Interval of each posterior distribution."}
+#determine and plot average predictions with 89% CIs
+social_decision_posterior_plot <- social_decision_samples_long %>%
+  filter(.variable %in% c("ap", "bp_kinkajous")) %>% 
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 18)) +
+  scale_y_discrete(limits = c("bp_kinkajous", "ap"), labels = c(bquote(beta[7]), bquote("p"[0])), expand = c(0,0.1)) +
+  xlim(c(-4,4)) +
+  labs(title = "B",
+       x = "Value",
+       y = "Parameter")
+
+print(social_decision_posterior_plot)
+
+```
+
+```{r all-social-decision-models-plots, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6, fig.height = 6, fig.cap = "A) Posterior predictive probability of a kinkajou choosing the region with more kinkajous, by success condition  (e.g. the condition 'Region 1 -> 2' represents all decisions for which the kinkajou was in Region 1 and Region 2 had more kinkajous than Region 3). Solid lines give the mean posterior estimate and dotted lines the 89\\% credible interval. B) Posterior distributions of select Model 4 parameters when fit to empirical data. $p_0$ is the grand mean of the success probability, $\\beta_7$ is the linear regression coeffeicient for the kinkajou count difference between regions at the moment of choice.", fig.scap = "Posterior predictive probabilities of socially informed decisions", out.extra=''}
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(3, 1, heights = unit(c(0.6, 5, 2), "null"))))   
+grid.text("Social Predictors of Region Transitions by Kinkajous", gp=gpar(fontsize=14), vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(conditional_probability_social_plot, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))         
+print(social_decision_posterior_plot, vp = viewport(layout.pos.row = 3, layout.pos.col = 1))
+```
+
+#### Departure Rates
+
+Though we did not find evidence that the presence of kinkajous affects which region a kinkajou moves to, we did find evidence that the presence and distribution of other kinkajous in the tree affects how often kinkajous move between regions. We observed at least one kinkajous in the balsa tree during `r nrow(departures_long)` minute-long scans. Of these scans, `r sum(departures_long$Departures > 0)` (`r round(mean(departures_long$Departures > 0), digits = 3) * 100`%) included at least one kinkajou moving to a different region or exiting the tree. Overall, kinkajous were more likely to move between regions as the number of kinkajous increased (Figure 6).
+
+```{r departure posteriors, include = FALSE}
+load("../Results/social_model.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+m5_precis <- precis(social_model)
+#plot(social_model)
+pairs(social_model, pars = c("ap", "bp_n", "bp_Neighbors", "ap_sigma_Night", "ap_sigma_Region"))
+
+```
+
+```{r social_samples, include = FALSE}
+social_samples_long <- social_model %>%
+  gather_draws(ap, bp_n, bp_Neighbors, ap_sigma_Night, ap_Region[i]
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               #ap_Region.1,ap_Region.2,ap_Region.3
+               )
+
+
+#determine and plot average predictions with 89% CIs
+social_departures_parameter_plot <- social_samples_long %>%
+  filter(.variable %in% c("bp_Neighbors", "bp_n", "ap")) %>% 
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  scale_y_discrete(limits = c("bp_Neighbors", "bp_n", "ap"), labels = c(bquote(beta[9]), bquote(beta[8]), bquote("p"[0])), expand = c(0,0.1)) +
+  theme_classic() +
+  labs(title = "B) Posterior Distribution of Coefficients on Departure Rates",
+       x = "Estimated Effect",
+       y = "Parameter (Density)")
+  
+print(social_departures_parameter_plot)
+```
+
+```{r social_model_predictions, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height = 7, fig.cap = "Posterior predictive distribitions of p in Model 5"}
+social_model <- social_model %>% recover_types(departures_long)
+
+predictions_new_m5 <- departures_long %>% 
+  mutate(Study_Night = as.numeric(factor(Study_Night))) %>% 
+  group_by(Region, Study_Night) %>% 
+  data_grid(n = unique(social_model@data$n), Neighbors = unique(social_model@data$Neighbors)) %>%
+  ungroup() %>% 
+  add_linpred_draws(social_model, re_formula = NA)
+
+social_departures_prediction_plot <- predictions_new_m5  %>% 
+  group_by(n, Neighbors) %>% 
+  point_interval(.point = mean, .width = 0.89, .exclude = c(".chain", ".iteration", ".draw", ".row", "Study_Night", "Region")) %>%  
+  ggplot(aes(x = n)) +
+  geom_line(aes(y = .linpred), color = "#116656", size = 2) +
+  geom_lineribbon(aes(ymax = .upper, ymin = .lower), fill = "#88B2AA", alpha = 0.2) +
+  scale_x_continuous(breaks = c(1,2,3)) +
+  theme_classic() +
+  labs(x = "Kinkajous in Region", y = "Predicted Probability of Departure", title = "A) Posterior Predictions of Departure Rates") +
+  facet_grid(cols = vars(Neighbors), labeller = labeller(Neighbors = label_both))
+
+print(social_departures_prediction_plot)
+```
+
+```{r plot-departures-posteriors, echo = FALSE, warning = FALSE, message = FALSE, fig.width=6.25, fig.height = 6, fig.cap = "Posterior distributions of predicted departure rates of kinkajous from a balsa crown region. A) Departure rates conditioned on the number of kinkajous present in the region of interest and the number of kinkajous in other regions of the tree for a typical region (region-specific adjustment to intercept equal to zero). B) Posterior distributions of key parameters in the Departure Model (Model 5), where $p_0$ is the grand mean of the departure probability intercept, $\\beta_8$ is the linear effect of the number of kinkajous in the region of interest, and $\\beta_9$ is the linear effect of the number of kinkajous in other regions.", fig.scap= "Posterior distributions of predicted departure rates", out.extra=''}
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(2, 1, heights = unit(c(5, 3), "null"))))   
+#grid.text("Posterior Distributions of Departure (Model 5) Parameters and Predictions", gp=gpar(fontsize=14), vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(social_departures_prediction_plot, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))         
+print(social_departures_parameter_plot, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+```
+
+Kinkajous were significantly more likely to depart a region as the number of other kinkajous in that region increased ($\bar\beta_8$ = `r round(m5_precis["bp_n", "mean"], digits = 2)`; 89% CI [`r round(m5_precis["bp_n", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`]). Kinkajous were also more likely to depart a region as the number of kinkajous in other regions increased ($\bar\beta_9$ = `r round(m5_precis["bp_Neighbors", "mean"], digits = 2) %>% unlist(use.names = FALSE)`; 89% CI [`r round(m5_precis["bp_Neighbors", c("5.5%", "94.5%")], digits = 2) %>% unlist(use.names = FALSE)`). We thus see strong evidence that kinkajous move around more in tree when other kinkajous are present, and weak evidence that this effect is stronger when the kinkajous are in the same region, relative to when they are in other regions.
+
+## Discussion
+### Conclusions
+
+When examining the presence of kinkajous in the balsa crown, relative to the distribution of flowers, three clear patterns stand out.
+
+First, while the overall density of flowers in the crown increased over the course of the study, the duration of kinkajou visits to the tree fell off sharply toward the study's end. This stands in clear contrast to our prediction that kinkajous would spend more time in the tree crown when flower density was greater. This contradiction may be explained by the increasing availability of another food source, *Dipteryx oleifera* around the time kinkajous visit durations decreased, suggesting balsa nectar may serve primarily as a fall-back food during a resource scarce time-period. 
+
+Second, kinkajous move between regions more frequently when there are other kinkajous in the tree, and especially when those kinkajous are in the same region of the tree crown. This appears to support our hypothesis that kinkajous engage in scramble competition for balsa flowers, but it is hard to rule out any number of other factors that could increase overall movement activity when multiple kinkajous are present in the tree. 
+
+Third, the movement of kinkajous between regions is highly structured, with certain transitions made much more often than others. This underlying structure appears to be the primary driver of whether kinkajous move into a more flower-dense region or not, with no evidence to suggest that between-night variance in regional flower densities affects these decisions. 
+
+A fourth pattern is not strong enough to merit strong conclusions, but none-the-less warrants attention. As the density of flowers in a specific region increases relative to the other regions, kinkajous were less likely to visit that region but stayed longer when they did. This is not likely to be a result of flower processing time, as the number of flowers in the whole tree does not increase the duration of stay. If not simply a product of noise, this pattern would suggest kinkajous are not making movement decisions based on overall flower density, but do match foraging effort to local resource density - in keeping with the basic tenets of Optimal Foraging Theory. For such behavior to occur, kinkajous must be using information about the density of flowers in regions of the tree they do not currently occupy. One way they could gain this information is directly through perception. It would be somewhat surprising if they did this, given that they do not chose to move into more dense regions, but could be explained if the size of our regions does not capture the scale of kinkajou decision making, or if kinkajous visit and deplete patches of flowers systematically. This latter explanation would indicate kinkajous have pre-existing knowledge of patch locations within the tree. Alternatively, kinkajous may acquire information about the density of flowers in each region on a given night through sampling. This would require the kinkajous to visit each region of the tree for at least a short period each night (consistent with the data) and maintain within their working memory an estimate of the flower density in previously visited regions.
+
+Though we found no evidence that kinkajous assess the current distribution of flowers across the tree crown when making decisions, or that their movements through the tree crown were shaped by previous experience with the distribution of flowers, we are not able to rule these hypotheses out. The number of relevant "decisions" we observed is small, and the credible intervals on the parameters of interest in our models are large. In short, we lack the power to rule anything out. Additionally, it is quite possible - likely even - that kinkajous make decisions that are not captured by the boundaries and scale of our regional distinctions. Exploring how kinkajous make decisions at individual branches in the tree crown structure may yield different results. Unfortunately, our efforts to collect additional data with better protocols for resolving the three-dimensional distribution of kinkajous and flowers as a part of this project were disrupted by the COVID-19 pandemic.
+
+### The need to track individuals
+
+Our ability to extend the conclusions of this study to the way kinkajous learn during a foraging task is greatly limited by our lack of individually identified kinkajous. For example, we use average flower counts on previous nights to estimate what information a kinkajou *might* have; the power of this analysis would increase considerably if we could assess the distribution of flowers when we knew a kinkajou to have previously visited the tree. For example, we could ask whether the distribution of flowers during one visit by a kinkajou predicts that kinkajous initial trajectory through the tree on its next visit - and whether this effect decreases the longer apart the two visits are. Such analyses could reveal rates of learning and forgetting in kinkajous and whether they match the rates at which flower density in the tree crown changes. Additionally, we could explore variation in the patterns which kinkajous move through the tree. For example, if individual kinkajous tend to move through the tree in a consistent pattern, but these patterns differ between kinkajous, it would suggest kinkajou are more prone to reinforce decisions that are 'good enough', rather than to explore at random or sample different strategies. Analyses such as these are integral to studying the roles of reinforcement and inference in animal learning, central themes of other chapters in this dissertation.
+
+### What kinkajou-balsa interactions can tell us about animal learning
+
+Nectar is often patchily distributed at multiple spatial scales, and thus nectar foraging has been used extensively to study animal learning. When foragers can perceive multiple options, they typically choose the options that are nearest and from which energy can most efficiently be extracted [@pyke1981;@marden1981]. Often, the nectar concentrations of flowers are not immediately apparent, however, and thus nectar foragers' decisions usually change with time and experience as they learn to associate cues such as location or honest scent signals with nectar quality [@knauer2015;@burdon2020]. Learning by iterative reinforcement is sufficient to explain patterns of route optimization between multiple, spatially stable foraging locations in honeybees [@reynolds2013]. In accord with the ecological intelligence hypothesis, the speed and consistency of such route formation is strongest when foraging locations are further apart [@buatois2016]. There were clear patterns in how kinkajous moved between regions of the tree crown in our study, which may reflect learned routines or the way kinkajous intrinsically interact with the structure of the tree. Further efforts to keep track of kinkajous' identities over the course of a similar study would help reveal how individual behavior changes over time, and thus how they learn to associate certain crown regions with higher overall nectar productivity. 
+
+In changing environments, foragers must balance the exploitation of learned environmental properties with continued exploration and sampling. Nectar foraging bees, for example, vary predictably in rates of exploratory behavior and behavioral extinction (the abandonment of reinforced behaviors following loss of reinforcing stimuli) based on species level differences in physiology, social structure, and central-place constraints [@altoufailia2013;@townsend-mehler2010]. The species in most nectar foraging studies (i.e. bees and hummingbirds), however, often fail to exhibit types of learning associated with cognitive flexibility that are seen in mammals. Honeybees, for example, fail to use novel shortcuts between known foraging locations, as has been demonstrated in bats [@harten2020], indicating the bees can learn the behavioral links between foraging locations, but do not learn the spatial relations [@dyer1991]. Conversely, some primates adopt near-optimal routes through multi-destination arrays without needing experience, perhaps by generalizing heuristics learned previously in similar situations (Chapter 1). In a laboratory testing paradigm that switches the reward contingencies back-and-forth between behavioral options, mammals - including one kinkajou [@braveman1971a] - learn to switch to previously unrewarded behaviors faster with subsequent reversals in reward outcomes, while invertebrates maintain the same rates of behavior switching no matter how many times the reversal occurs [@bitterman1965]. 
+
+Though the production of nectar in balsa crowns appears to offer a natural occurance of such an experiment, the spatial scale of our study may also be too small for any benefits of flexible decision making to carry much consequence for kinkajous, potentially explaining why we do not find evidence of such behavior. Additionally, the variation in flower distribution across our selected regions is both minimal and fast; kinkajous would have little opportunity to learn how to exploit a recent change before another change occurred. Should kinkajous truly fail to learn new foraging strategies in response to changing resource distributions, it would challenge the existing phylogenetic and ecological theories of cognitive evolution. Thus, our results point to a need for inquiry at smaller scales (e.g. branch level decision making) and larger scales (e.g. across trees in their home-ranges) in which a lack of flexible decision-making and reversal-learning would have greater fitness consequences for the kinkajous. 

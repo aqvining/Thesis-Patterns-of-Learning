@@ -1,0 +1,85 @@
+---
+title: "Balsa Bibliographic Annotations"
+author: "Alexander"
+date: "2023-03-03"
+output: html_document
+---
+@townsend-mehler2010
+
+honeybees depend on social information for foraging, bumblebees more reliant of gathering information directly from environment
+
+Focus on extinction: "Decay of behavior when a conditinal behavior is no longer paired with its reinforcer"
+Also adresses exploration.
+
+Both species switch between a High-to-Low value test feeder and a Medium value control feeder, rather than the test feeder behavior going "extinct" and then a regular return to control feeder.
+Both species also resist foraging at sample after experience high value test feeder, even after test feeder stop producing
+
+bees repeatedly shifted among various locations, suggesting continuous evaluation of multiple behavioral options. Useful for studying sequential decision-making framework
+
+@stephens2008
+
+useful to think in terms of hierarchies of decisions (e.g. flower level decisions, crown-region level decisions, tree level decisions. tree-clump level decisions)
+
+"Several recent articles suggest that the neural underpinnings of social interaction could be experimentally accessible (Flombaum & Santos, 2005; Sanfey, 2007), but these studies tend to focus on complex animals in complex situations (e.g., primate strategies in social games). It could be quite revealing to apply similar techniques to these basic problems of competition and resource use."
+
+"These adaptive differences may be short-term differences that reflect recent changes in an animal’s habitat or longer term differences (between species and populations) that reflect differences in evolutionary history (which we might call cognitive specialization, following Shettleworth, 1998)"
+
+"As explained above, this view holds that observed irrational choice is an emergent property of mechanisms that work well (i.e., typically make rational choices) in natural choice situations (see Todd & Gigerenzer, 2000). This basic idea stretches back to the early days of behavioral ecology, when it was known as the rules-ofthumb problem (see, e.g., Cheverton, Kacelnik, & Krebs, 1985). After a brief flurry of interest, behavioral ecologists seemed to abandon the rules-of-thumb problem until its reemergence under the heading of ecology rationality."
+
+@pyke1978
+
+Five assumptions of movement model (pg 75). Number 3: Resource points occur in a fairly dense two-dimensional array and this array does not change ocer time
+
+Also ",in general, animals are assumed to move between resource points that are visible from one another [and] do so in a direct linear manner."
+
+Bumbleebees tend to leave infloresences by contintuing to travel in the same cardinal direction they were when they arrived.
+
+Describes Different possible levels of memory and expected effects on movements
+
+lvl 1: No Knowledge -> bees move at random
+lvl 2: Bees remember direction of arrival - bees depart foraging locations along same vector they arrived - with adjustment to pilot toward available locations
+lvl 3: Bees remember direction of arrival and amount of energy obtained from present resource - bees should widen search angle when departing from high value resources (helps avoid foraging in recently depleted areas)
+
+"For one of the species of bumblebees (B. appositus) and one of the plant species (A. cohmbianum) in this study, I have found that the more time a bumblebee spends at a flower or an inflorescence the more likely it is to fly to another flower on that intlorescence (Pyke, unpublished data). Since the amount of time that a bumblebee spends at a flower is an increasing function of the amount of nectar it obtains from the flower (Pyke, unpublished data), the above result suggests that the likelihood of a bumblebee flying from one flower to another on the same inflorescence increases with the amount of nectar obtained at the first flower."
+
+4/4 predictions of bumblebee movement under memory level three were supported by the data
+
+Additional support, from the frequency of sequential turning directions (left vs right) that bumblebees remember arrival directions at previous locations
+
+"The data presented above indicate that the memory of a bumblebee that is foraging for nectar extends at least to a knowledge of the direction of arrival at the present inflorescence (i.e., resource point), the change in direction at the previous inflorescence and the amount of energy (i.e., nectar) obtained at the present inflorescence."
+
+@ford1988
+
+Data from a lot of general mamallian studies that include kinkajous - worth doing some additional reading?
+
+good citation for vocal repertoire in kinkajous
+
+@bitterman1965
+
+Good foundational research to consider difference in basic learning approaches between species
+
+Reduction in time to adjust following reversal of reward contingency occurs in rats, but not fish (mouthbreeders). Does this suggest rats model changes in reward frequency, but fish do not?
+Rats maximize choice (learn to always choose more rewarded option), while fish exhibit random matching (choose at rations that match reward contingencies)
+
+Rats that have cortical lesions continue to show reversal improvement and maximazation in spatial discrimination tasks, but not visual discrimination tasks
+
+Rats exhibit reward following (are more likely to choose previously rewarded option) while monkeys exhibit reward avoidance (are less likely to choose the previously reward option). This work is cited, not presented. Reflects lower renewal rates of resources primates rely on? learned or inate?
+
+@braveman1971a
+
+A single kinkajou maximized choice in a spatial discrimination task but not a visual task
+
+no sequential reversal task was presented, but this is in discussion "Taken together with the results of the SDR studies, which indicate that the kinkajou shows progressive improvement on both types of tasks, it is clear that these results are not totally consistent with those obtained from the cats."
+
+@pyke1984
+
+Lots of mathematical theory: useful for modelling paper but less so here
+
+pg 559:
+Waddington & Holden (271) observedhoneybees foraging for nectar among two types of randomly distributed artificial flowers that differed in color and shape. They varied the average nectar yield per flower of each type by varying the proportions of flowers containing 21J..! of unscented 25% sucrose solution, varied the densities of the 2 flower types, and for each of 7 cases, determined the proportions of visits to each flowertype if the bees foraged optimal ly. The observed and predicted proportions were all similar, although a few significant differences were found (271).
+Real and his colleagues (2 16, 217) also observed nectarivores (bumblebees and wasps) foraging for nectar among two kinds of differently colored, randomly distributed artificial flowers . In both studies, the densitiesof each flower type were equal, and the value of each type was varied by changing the probability distribution of the nectar volume per flower. The insects exhibited flower preferences that increased with increases in the average nectaryield per flower and decreased with increases in the variance (216, 217). 
+Waddington etal (269) also considered the importanceof rewardvariance in determining flower preferences. They observed bumblebees foraging among four flowers of two color types arranged in a square with diagonally opposite flowers of different colors. Each time a bee left a flower, the nectar in that flower was replenished according to a probability distribution of nectar rewards. The bumblebees preferred flower types with constant rewards to ones with the same mean but variable rewards (269). In addition, the bumblebees exhibited partial rather than absolute flower preferences (269). 
+In all of the above studies of nectarivore foraging, the animals were risk averse and did not always maximize their expected net rate of energy gain. This result seems surprising in view of the large numbers of flowers (or plants) that many nectarivores (especially bees) are likely to visit during a day. 
+Marden & Waddington (152) observed honeybees choosing between two artificial flowers that differed in color and sometimes distance. When the flowers were equidistant from a bee, 14 of the 15 bees always chose one color or the other, while the last one showed no color preference. When the flowers were at different distances from a bee (but not in different directions), 8 of 10 bees tended to choose the closest flower independently of its color; one bee was initially constant to a particular color and later tended to choose the closest flower; another bee remained color constant. Thus, almost all the bees eventually tended to forage optimally. The preferences were partial rather than absolute, however.
+
+pg 564: here animals can see food items at a distance , they tend to move to the closest and the best items (best in terms of the rate of food gain) (e.g. 152, 176, 203, 297, 298).
